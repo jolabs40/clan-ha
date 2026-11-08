@@ -1,5 +1,10 @@
 # Clan
 
+[![Open your Home Assistant instance and open this repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=jolabs40&repository=clan-ha&category=integration)
+[![Validate](https://github.com/jolabs40/clan-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/jolabs40/clan-ha/actions/workflows/validate.yml)
+
+[Version française](README.fr.md)
+
 A Home Assistant panel that answers, on one screen, who can sign in, who is followed, and who gets notified.
 
 ![Clan: the map of a family, its dormant phones, and the clean-up in Home Assistant](docs/demo.gif)
@@ -45,10 +50,17 @@ which phones are silent. The file goes when the integration is removed.
 
 Home Assistant 2025.1 or later (tested on 2025.1.4 and on the current release).
 
-HACS: add this repository as a custom repository (category Integration), install Clan, restart Home
-Assistant, then add the integration in Settings > Devices & services. The panel appears in the sidebar.
+In Settings > Marketplace, search for Clan (or use the button above) and select Install. Then add the
+Clan integration from Settings > Devices & services: the panel appears in the sidebar, for administrators.
 
-Manually: copy `custom_components/clan` into your `config/custom_components` folder, restart, then add the
+If it does not show up yet, select Add from link and enter `https://github.com/jolabs40/clan-ha` (this asks
+for a GitHub connection).
+
+Before Home Assistant 2026.11, the Marketplace was the HACS integration: search for Clan there, download it
+and restart Home Assistant.
+
+Without either, unzip `clan.zip` from the [latest release](https://github.com/jolabs40/clan-ha/releases/latest)
+into a `custom_components/clan` folder of your configuration, restart Home Assistant, then add the
 integration.
 
 ## How the links are found

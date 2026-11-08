@@ -1,5 +1,10 @@
 # Clan
 
+[![Ouvrir ce dépôt dans la Marketplace de votre Home Assistant.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=jolabs40&repository=clan-ha&category=integration)
+[![Validate](https://github.com/jolabs40/clan-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/jolabs40/clan-ha/actions/workflows/validate.yml)
+
+[English version](README.md)
+
 Un panneau Home Assistant qui répond, sur un seul écran : qui peut se connecter, qui est suivi, qui reçoit
 les notifications.
 
@@ -48,12 +53,19 @@ oublierait sinon pendant une heure quels téléphones sont silencieux. Le fichie
 
 Home Assistant 2025.1 ou plus récent (éprouvé sur la 2025.1.4 et sur la version courante).
 
-HACS : ajouter ce dépôt comme dépôt personnalisé (catégorie Intégration), installer Clan, redémarrer Home
-Assistant, puis ajouter l'intégration dans Paramètres > Appareils et services. Le panneau apparaît dans la
-barre latérale.
+Dans Paramètres > Marketplace, chercher Clan (ou utiliser le bouton ci-dessus) et choisir Installer.
+Ajouter ensuite l'intégration Clan depuis Paramètres > Appareils et services : le panneau apparaît dans la
+barre latérale, pour les administrateurs.
 
-À la main : copier `custom_components/clan` dans le dossier `config/custom_components`, redémarrer, puis
-ajouter l'intégration.
+S'il n'apparaît pas encore, choisir Ajouter grâce à un lien et saisir `https://github.com/jolabs40/clan-ha`
+(une connexion à GitHub est demandée).
+
+Avant Home Assistant 2026.11, la Marketplace était l'intégration HACS : y chercher Clan, le télécharger, puis
+redémarrer Home Assistant.
+
+Sans l'une ni l'autre, décompresser `clan.zip`, joint à la [dernière version](https://github.com/jolabs40/clan-ha/releases/latest),
+dans un dossier `custom_components/clan` de la configuration, redémarrer Home Assistant, puis ajouter
+l'intégration.
 
 ## Comment les liens sont trouvés
 
