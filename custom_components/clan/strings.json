@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Clan",
+        "description": "Adds a panel for administrators that maps users, people, their phones and the notifications they receive."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Clan is already set up."
+    }
+  }
+}

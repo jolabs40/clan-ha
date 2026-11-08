@@ -1,0 +1,15 @@
+{
+  "domain": "clan",
+  "name": "Clan",
+  "after_dependencies": ["alert", "automation", "cloud", "mobile_app", "notify", "person", "script"],
+  "codeowners": ["@jolabs40"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/jolabs40/clan-ha",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/jolabs40/clan-ha/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}
