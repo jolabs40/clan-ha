@@ -25,7 +25,7 @@ and alerts of your instance, and draws the links between them in columns, from a
 The panel has three views:
 
 - Map: five columns read from left to right, users, people, devices, notifications and automations. On a
-  computer, the map builds itself column by column when the panel opens. Click a node to light up what it
+  computer, the map builds itself column by column when the panel opens, and again after a refresh. Click a node to light up what it
   leads to, towards the accounts and towards the automations, and to read its details. From there, or from a card of
   the next view, Isolate keeps only that branch on the map, and Hide takes the node off the map
   with whatever only hangs from it: hiding a child's account removes their person and phones, while a

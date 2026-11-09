@@ -595,6 +595,8 @@ export class ClanGraph extends HTMLElement {
     if (!this._nodes?.length || this._nodes.length > PLAY_MAX) return;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const once = { fill: "backwards", easing: "ease-out" };
+    // fade up to the element's own opacity, so that dimmed nodes stay dimmed
+    const fade = (el) => [{ opacity: 0 }, { opacity: getComputedStyle(el).opacity }];
     const start = new Map();
     const cols = [[], [], [], [], []];
     for (const n of this._nodes) cols[n.rank].push(n);
@@ -606,13 +608,13 @@ export class ClanGraph extends HTMLElement {
     const anims = [];
     for (const el of this._vp.querySelectorAll(".col-head")) {
       const delay = Number(el.dataset.r) * PLAY_STEP;
-      anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: 400, delay }));
+      anims.push(el.animate(fade(el), { ...once, duration: 400, delay }));
     }
     for (const n of this._nodes) {
       const el = this._nodeEls.get(n.id);
       if (!el) continue;
       const delay = start.get(n.id);
-      anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: PLAY_POP, delay }));
+      anims.push(el.animate(fade(el), { ...once, duration: PLAY_POP, delay }));
       anims.push(
         el
           .querySelector(".pop")
@@ -630,7 +632,7 @@ export class ClanGraph extends HTMLElement {
       const end = Math.max(start.get(a.id) + PLAY_POP, start.get(b.id));
       const delay = Math.max(0, end - PLAY_DRAW);
       if (el.hasAttribute("stroke-dasharray")) {
-        anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: PLAY_DRAW, delay }));
+        anims.push(el.animate(fade(el), { ...once, duration: PLAY_DRAW, delay }));
         return;
       }
       // solid line drawn from its left end, arrow head added at the end

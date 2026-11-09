@@ -29,7 +29,7 @@ Trois vues :
 
 - Carte : cinq colonnes qui se lisent de gauche à droite, utilisateurs, personnes, appareils,
   notifications et automatisations. Sur un ordinateur, la carte se construit colonne après colonne à
-  l'ouverture du panneau. Un clic sur un nœud éclaire ce à quoi il mène, vers les comptes et vers les
+  l'ouverture du panneau, et de nouveau après une actualisation. Un clic sur un nœud éclaire ce à quoi il mène, vers les comptes et vers les
   automatisations, et ouvre son détail. De
   là, ou depuis une fiche de la vue suivante, Isoler ne garde que cette branche sur la carte, et
   Masquer retire le nœud avec tout ce qui ne dépend que de lui : masquer le compte d'un enfant retire sa

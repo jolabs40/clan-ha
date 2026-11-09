@@ -262,7 +262,11 @@ class ClanPanel extends HTMLElement {
     root.querySelector("[data-menu]").addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
     });
-    root.querySelector("[data-refresh]").addEventListener("click", () => this._load());
+    root.querySelector("[data-refresh]").addEventListener("click", () => {
+      // the map is built again from its first column
+      this._replay = true;
+      this._load();
+    });
     root.addEventListener("click", (ev) => this._onClick(ev));
     this._load();
   }
@@ -286,6 +290,8 @@ class ClanPanel extends HTMLElement {
       this._graph = null;
     } finally {
       button?.classList.remove("spin");
+      // a refresh from another tab does not replay the map later
+      this._replay = false;
     }
   }
 
@@ -433,9 +439,11 @@ class ClanPanel extends HTMLElement {
     graph.setSpotlight(P.spotlight);
     if (this._query) graph.setQuery(this._query);
     graph.select(this._selected);
-    // the first map of the page is built column by column, on a computer
-    const play = !this._played && !this._selected && matchMedia("(hover: hover) and (pointer: fine)").matches;
+    // the first map of the page, and the map after a refresh, are built column by column, on a computer
+    const play =
+      (this._replay || (!this._played && !this._selected)) && matchMedia("(hover: hover) and (pointer: fine)").matches;
     this._played = true;
+    this._replay = false;
     requestAnimationFrame(() => {
       graph.fit();
       if (play && graph.clientWidth >= 900) graph.play();
