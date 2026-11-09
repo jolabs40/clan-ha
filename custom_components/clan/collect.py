@@ -57,6 +57,7 @@ async def async_collect(hass: HomeAssistant) -> dict[str, Any]:
         "users": await _users(hass),
         "persons": _persons(hass),
         "entities": entities,
+        "app_entities": _app_entities(ent_reg),
         "devices": _devices(hass, dev_reg, ent_reg, wanted),
         "apps": apps,
         "notify": notify,
@@ -155,6 +156,15 @@ def _entities(hass: HomeAssistant, ent_reg: er.EntityRegistry) -> dict[str, dict
             if domain == "notify" and isinstance(members, list | tuple):
                 entity["members"] = list(members)
     return out
+
+
+def _app_entities(ent_reg: er.EntityRegistry) -> dict[str, str]:
+    """Companion app entities and their device, for the automations that read them."""
+    return {
+        entry.entity_id: entry.device_id
+        for entry in ent_reg.entities.values()
+        if entry.platform == "mobile_app" and entry.device_id
+    }
 
 
 def _devices(

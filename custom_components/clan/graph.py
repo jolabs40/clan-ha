@@ -24,6 +24,11 @@ ACTION_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 PERSON_RE = re.compile(r"\bperson\.[a-z0-9_]+")
 TRACKER_RE = re.compile(r"\bdevice_tracker\.[a-z0-9_]+")
 HEX_RE = re.compile(r"\b[0-9a-f]{32}\b")
+ENTITY_RE = re.compile(r"\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b")
+# events fired when a notification button is pressed, and the field holding the button's action
+BUTTON_EVENTS = {"mobile_app_notification_action": "action", "ios.notification_action_fired": "actionName"}
+# a button that opens a page fires no event
+BUTTON_SKIP = {"URI"}
 UI_NODE = "ui:persistent"
 UI_ACTIONS = {"persistent_notification.create", "notify.persistent_notification"}
 # notify actions that are not a target
@@ -89,6 +94,48 @@ def action_calls(config: Any) -> Iterator[dict[str, Any]]:
             stack.extend(reversed(item))
 
 
+def buttons(call: dict[str, Any]) -> list[str]:
+    """Actions of the buttons a notification call adds (data.data.actions)."""
+    data = call.get("data")
+    extra = data.get("data") if isinstance(data, dict) else None
+    actions = extra.get("actions") if isinstance(extra, dict) else None
+    if not isinstance(actions, list):
+        return []
+    found = []
+    for button in actions:
+        action = button.get("action") if isinstance(button, dict) else None
+        if isinstance(action, str) and action and action not in BUTTON_SKIP:
+            found.append(action)
+    return found
+
+
+def button_listeners(config: Any) -> Iterator[str | None]:
+    """Button actions a config waits for, from its triggers and wait_for_trigger; None for any button."""
+    stack = [config]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            types = item.get("event_type")
+            for event in types if isinstance(types, list) else [types]:
+                if event in BUTTON_EVENTS:
+                    data = item.get("event_data")
+                    action = data.get(BUTTON_EVENTS[event]) if isinstance(data, dict) else None
+                    yield action if isinstance(action, str) and action else None
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def answers(listened: str | None, sent: list[str], same: bool) -> bool:
+    """Whether a routine waiting for `listened` reacts to a notification carrying the `sent` buttons."""
+    if listened is None:
+        return True
+    if "{{" in listened:
+        # an action built at run time is matched within its own routine only
+        return same
+    return listened in sent or (same and any("{{" in a for a in sent))
+
+
 def call_targets(call: dict[str, Any], key: str) -> list[str]:
     found: list[str] = []
     for holder in (call, call.get("target"), call.get("data")):
@@ -110,6 +157,8 @@ class Builder:
         self.app_by_device = {a["device_id"]: a for a in self.apps.values() if a.get("device_id")}
         self.notify: dict[str, dict] = snapshot.get("notify", {})
         self.services = set(snapshot.get("services", []))
+        # companion app sensors and the device they belong to
+        self.app_entities: dict[str, str] = snapshot.get("app_entities") or {}
         # device memory from earlier runs: {"seen": {device: time}, "quiet": {device: time}}
         memory = snapshot.get("memory") or {}
         self.memory = {key: dict(memory.get(key) or {}) for key in ("seen", "quiet")}
@@ -468,8 +517,13 @@ class Builder:
             enabled = routine.get("enabled", True)
             links: list[tuple[str, str, str | None, bool]] = []  # target, kind, label, broken
             calls: set[str] = set()
+            sent: list[tuple[str, list[str]]] = []  # node reached, buttons of the notification
             for call in action_calls(routine.get("config")):
-                links += self.call_links(call, calls)
+                out = self.call_links(call, calls)
+                links += out
+                actions = buttons(call)
+                if actions:
+                    sent += [(target, actions) for target, kind, _l, broken in out if kind == "notifies" and not broken]
             for notifier in routine.get("notifiers") or []:
                 target, ok = self.notify_target(notifier.removeprefix("notify."))
                 links.append((target, "notifies", f"notify.{notifier.removeprefix('notify.')}", not ok))
@@ -483,9 +537,30 @@ class Builder:
             for user_id in sorted(set(HEX_RE.findall(text))):
                 if user_id in self.users:
                     links.append((f"user:{user_id}", "mentions", None, False))
-            found[rid] = {"routine": routine, "links": links, "calls": calls, "enabled": enabled}
+            for entity_id in sorted(set(ENTITY_RE.findall(text))):
+                device_id = self.app_entities.get(entity_id)
+                if device_id in self.devices and not entity_id.startswith(("device_tracker.", "notify.")):
+                    links.append((self.device_node(device_id), "reads", entity_id, False))
+            found[rid] = {
+                "routine": routine,
+                "links": links,
+                "calls": calls,
+                "enabled": enabled,
+                "sent": sent,
+                "listens": list(button_listeners(routine.get("config"))),
+                "answers": [],
+            }
 
-        relevant = {rid for rid, r in found.items() if r["links"]}
+        # a button pressed in a notification runs the routines waiting for its action
+        for rid, r in found.items():
+            for listened in r["listens"]:
+                for sender_id, sender in found.items():
+                    for target, actions in sender["sent"]:
+                        if answers(listened, actions, sender_id == rid):
+                            label = listened if listened and "{{" not in listened else ", ".join(actions)
+                            r["answers"].append((target, label))
+
+        relevant = {rid for rid, r in found.items() if r["links"] or r["answers"]}
         grew = True
         while grew:
             grew = False
@@ -518,6 +593,8 @@ class Builder:
             for called in sorted(r["calls"]):
                 if f"routine:{called}" in relevant:
                     self.link(rid, f"routine:{called}", "calls", called, off=not r["enabled"] or None)
+            for source, label in r["answers"]:
+                self.link(source, rid, "answers", label, off=not r["enabled"] or None)
 
     def call_links(self, call: dict[str, Any], calls: set[str]) -> list[tuple[str, str, str | None, bool]]:
         action = call.get("action", call.get("service"))
@@ -593,7 +670,9 @@ class Builder:
     def leftovers(self) -> None:
         """App devices nobody follows and nothing notifies."""
         used = {
-            target for (_source, target, kind) in self.edges if kind in ("tracks", "notifies", "includes", "watches")
+            target
+            for (_source, target, kind) in self.edges
+            if kind in ("tracks", "notifies", "includes", "watches", "reads")
         }
         for app in self.apps.values():
             node_id = f"device:{app.get('device_id')}"
@@ -647,7 +726,7 @@ class Builder:
             for node_id, node in self.nodes.items():
                 if node["type"] != "routine" or "disabled" in node["flags"] or dormant(node_id):
                     continue
-                if serves_nothing(node_id, ("notifies", "watches", "mentions", "calls")):
+                if serves_nothing(node_id, ("notifies", "watches", "mentions", "calls", "reads")):
                     mark(node_id, "info", "dead_routine")
                     grew = True
 

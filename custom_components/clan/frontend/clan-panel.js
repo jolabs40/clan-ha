@@ -8,11 +8,20 @@ const { ICONS } = await import(`./clan-icons.js${V}`);
 
 const PREFS_KEY = "clan-prefs";
 const ISSUES = "https://github.com/jolabs40/clan-ha/issues";
-// bump to drop saved pins when the layout changes
-const PINS_LAYOUT = 2;
 const TYPES = ["user", "person", "device", "tracker", "notify", "ui", "routine"];
 const SEVERITIES = ["error", "warn", "info"];
-const EDGE_TYPES = ["account", "registered", "tracks", "notifies", "includes", "calls", "watches", "mentions"];
+const EDGE_TYPES = [
+  "account",
+  "registered",
+  "tracks",
+  "notifies",
+  "includes",
+  "calls",
+  "answers",
+  "watches",
+  "reads",
+  "mentions",
+];
 
 function loadPrefs() {
   try {
@@ -74,9 +83,6 @@ const STYLES = `
   .chip ha-icon { --mdc-icon-size: 16px; }
   .chip.plain.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
   .sep { flex: 1 1 auto; }
-  .seg { display: inline-flex; border: 1px solid var(--divider-color); border-radius: 16px; overflow: hidden; }
-  .seg button { background: none; border: none; padding: 4px 12px; cursor: pointer; font-size: 13px; }
-  .seg button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
   .search { display: flex; align-items: center; gap: 4px; border: 1px solid var(--divider-color); border-radius: 16px; padding: 0 8px; }
   .search input { border: none; background: none; color: inherit; font: inherit; font-size: 13px; width: 130px; padding: 5px 0; outline: none; }
   .search ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
@@ -182,14 +188,11 @@ class ClanPanel extends HTMLElement {
     const prefs = loadPrefs();
     this._prefs = {
       tab: prefs.tab || "map",
-      layout: prefs.layout === "columns" ? "columns" : "force",
       hidden: Array.isArray(prefs.hidden) ? prefs.hidden : [],
       system: !!prefs.system,
       disabled: prefs.disabled !== false,
       legend: prefs.legend !== false,
       spotlight: !!prefs.spotlight,
-      pins: prefs.pinsLayout === PINS_LAYOUT && prefs.pins && typeof prefs.pins === "object" ? prefs.pins : {},
-      pinsLayout: PINS_LAYOUT,
       // isolated and hidden node ids
       focus: Array.isArray(prefs.focus) ? prefs.focus : [],
       masked: Array.isArray(prefs.masked) ? prefs.masked : [],
@@ -415,8 +418,6 @@ class ClanPanel extends HTMLElement {
         }
         <span class="sep"></span>
         <label class="search"><ha-icon icon="mdi:magnify"></ha-icon><input data-search type="search" placeholder="${esc(T.search)}" value="${esc(this._query)}"></label>
-        <span class="seg"><button data-layout="force" class="${P.layout === "force" ? "on" : ""}">${esc(T.layout_force)}</button><button data-layout="columns" class="${P.layout === "columns" ? "on" : ""}">${esc(T.layout_columns)}</button></span>
-        <button class="ic" data-relayout title="${esc(T.layout_force)} ↺" aria-label="relayout" ${P.layout === "force" ? "" : "hidden"}><ha-icon icon="mdi:shuffle-variant"></ha-icon></button>
         <button class="ic" data-fit title="${esc(T.fit)}" aria-label="${esc(T.fit)}"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon></button>
         <button class="ic" data-legend title="${esc(T.legend)}" aria-label="${esc(T.legend)}"><ha-icon icon="mdi:map-legend"></ha-icon></button>
       </div>
@@ -426,22 +427,22 @@ class ClanPanel extends HTMLElement {
     this._graph = graph;
     this._renderScope();
     graph.setData(this._data, {
-      layout: P.layout,
       visible: this._visible(),
-      pins: P.pins,
       heads: [T.type_user, T.type_person, T.type_device, T.type_notify, T.type_routine],
     });
     graph.setSpotlight(P.spotlight);
     if (this._query) graph.setQuery(this._query);
     graph.select(this._selected);
-    requestAnimationFrame(() => graph.fit());
+    // the first map of the page is built column by column, on a computer
+    const play = !this._played && !this._selected && matchMedia("(hover: hover) and (pointer: fine)").matches;
+    this._played = true;
+    requestAnimationFrame(() => {
+      graph.fit();
+      if (play && graph.clientWidth >= 900) graph.play();
+    });
     graph.addEventListener("node-select", (ev) => {
       this._selected = ev.detail.id;
       this._renderDrawer();
-    });
-    graph.addEventListener("pins-changed", (ev) => {
-      P.pins = ev.detail.pins;
-      this._save();
     });
     const input = pane.querySelector("[data-search]");
     input.addEventListener("input", () => {
@@ -641,6 +642,7 @@ class ClanPanel extends HTMLElement {
       const persons = this._neighbors(n.id, "out", "account").map((e) => e.to);
       const tracked = persons.flatMap((p) => this._neighbors(p, "out", "tracks").map((e) => e.to));
       rows += this._row(T.notified_by, this._list(this._notifiers([...new Set([...devices, ...tracked])])));
+      rows += this._row(T.buttons_run, this._list(this._buttons([...new Set([...devices, ...tracked])])));
       const mentioned = this._neighbors(n.id, "in", "mentions").map((e) => this._link(e.from));
       if (mentioned.length) rows += this._row(T.used_by, this._list(mentioned));
       links.push(["/config/users", T.open]);
@@ -692,10 +694,12 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.services, (info.services || []).map((s) => `<code>${esc(s)}</code>`).join(" "));
       rows += this._row(T.notify_entities, (info.notify || []).map((s) => `<code>${esc(s)}</code>`).join(" "));
       rows += this._row(T.notified_by, this._list(this._notifiers([n.id])));
+      rows += this._row(T.buttons_run, this._list(this._buttons([n.id])));
       rows += this._row(
         T.presence_used_by,
         this._list(this._neighbors(n.id, "in", "watches").map((e) => this._link(e.from))),
       );
+      rows += this._row(T.sensors_used_by, this._list(this._labelled(this._neighbors(n.id, "in", "reads"), "from")));
       if (info.app?.entry_id) {
         // Mobile App entry, where it can be renamed or deleted
         links.push([`/config/integrations/integration/mobile_app#config_entry=${info.app.entry_id}`, T.open_app]);
@@ -708,6 +712,7 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.one_notify, esc(T[`kind_${n.kind}`] || ""));
       rows += this._row(T.reaches, this._list(this._neighbors(n.id, "out", "includes").map((e) => this._link(e.to))));
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
+      rows += this._row(T.buttons_run, this._list(this._labelled(this._neighbors(n.id, "out", "answers"), "to")));
     } else if (n.type === "ui") {
       rows += `<dd style="margin-top:12px">${esc(T.ui_text)}</dd>`;
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
@@ -722,10 +727,12 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.targets, this._list(targets));
       rows += this._row(T.runs, this._list(this._neighbors(n.id, "out", "calls").map((e) => this._link(e.to))));
       rows += this._row(T.run_by, this._list(this._neighbors(n.id, "in", "calls").map((e) => this._link(e.from))));
+      rows += this._row(T.run_from, this._list(this._labelled(this._neighbors(n.id, "in", "answers"), "from")));
       rows += this._row(
         T.edge_watches,
         this._list(this._neighbors(n.id, "out", "watches").map((e) => this._link(e.to))),
       );
+      rows += this._row(T.reads_sensors, this._list(this._labelled(this._neighbors(n.id, "out", "reads"), "to")));
       rows += this._row(
         T.names_users,
         this._list(this._neighbors(n.id, "out", "mentions").map((e) => this._link(e.to))),
@@ -734,6 +741,27 @@ class ClanPanel extends HTMLElement {
     }
     rows += this._issueList(n.id);
     return { rows, links };
+  }
+
+  // linked nodes, each with the labels of its link
+  _labelled(edges, end) {
+    return edges.map(
+      (e) =>
+        `${this._link(e[end])}<div class="sub">${(e.labels || []).map((l) => `<code>${esc(l)}</code>`).join(" ")}</div>`,
+    );
+  }
+
+  // routines run by a button of a notification these devices receive, directly or through a group
+  _buttons(deviceIds) {
+    const found = new Map();
+    const add = (edges) => {
+      for (const e of edges) found.set(e.to, e);
+    };
+    for (const id of deviceIds) {
+      add(this._neighbors(id, "out", "answers"));
+      for (const inc of this._neighbors(id, "in", "includes")) add(this._neighbors(inc.from, "out", "answers"));
+    }
+    return this._labelled([...found.values()], "to");
   }
 
   // HA records a long-lived token's creation, not its use
@@ -869,12 +897,15 @@ class ClanPanel extends HTMLElement {
       T.notified_by,
       notified.length ? this._list(notified) : `<span class="sub">${esc(T.nobody_notified)}</span>`,
     );
+    rows += this._row(T.buttons_run, this._list(this._buttons([...new Set([...devices, ...tracked])])));
     if (person) {
       rows += this._row(
         T.presence_used_by,
         this._list(this._neighbors(person.id, "in", "watches").map((e) => this._link(e.from))),
       );
     }
+    const sensors = devices.flatMap((d) => this._neighbors(d, "in", "reads"));
+    rows += this._row(T.sensors_used_by, this._list(this._labelled(sensors, "from")));
     rows += this._row(T.tokens, this._list(this._tokens(u.info?.tokens)));
     const issues = [u.id, person?.id, ...devices]
       .filter(Boolean)
@@ -1010,19 +1041,11 @@ class ClanPanel extends HTMLElement {
       target.classList.toggle("on");
       this._graph?.setVisible(this._visible());
       this._graph?.fit();
-    } else if (d.layout) {
-      if (P.layout === d.layout) return;
-      P.layout = d.layout;
-      this._save();
-      this._renderMap();
     } else if (target.hasAttribute("data-spotlight")) {
       P.spotlight = !P.spotlight;
       this._save();
       target.classList.toggle("on", P.spotlight);
       this._graph?.setSpotlight(P.spotlight);
-    } else if (target.hasAttribute("data-relayout")) {
-      P.pins = this._graph?.resetPins() || {};
-      this._save();
     } else if (target.hasAttribute("data-fit")) {
       this._graph?.fit();
     } else if (target.hasAttribute("data-legend")) {

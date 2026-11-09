@@ -1,4 +1,4 @@
-// Map element: force layout, like the Zigbee network maps, or columns from accounts to automations.
+// Map element: columns from accounts to automations.
 
 const V = new URL(import.meta.url).search;
 const { ICONS } = await import(`./clan-icons.js${V}`);
@@ -23,34 +23,30 @@ export const EDGE_COLORS = {
   calls: "#78909c",
   watches: "#00897b",
   mentions: "#78909c",
+  answers: "#d81b60",
+  reads: "#00897b",
 };
 export const EDGE_DASH = {
   registered: "5 4",
   includes: "7 3",
   watches: "1 5",
   mentions: "1 5",
+  reads: "6 3",
 };
 const RADIUS = { user: 20, person: 22, device: 17, tracker: 14, notify: 15, ui: 17, routine: 12 };
-const LENGTH = {
-  account: 70,
-  registered: 110,
-  tracks: 90,
-  notifies: 120,
-  includes: 95,
-  calls: 70,
-  watches: 140,
-  mentions: 150,
-};
-const ARROWS = new Set(["notifies", "includes", "calls"]);
+const ARROWS = new Set(["notifies", "includes", "calls", "answers"]);
+// vertical shift of a link drawn beside another between the same nodes
+const SIDE_OFFSET = { answers: 7, reads: -7 };
 const COLUMN_GAP = 250;
 const LABEL_MAX = 24;
-// distance between levels around an account
-const RING = 105;
-// islands up to this size without a person go to the side column
-const SMALL = 4;
-const LANE_STEP = 130;
-const LANE_ROW = 50;
-const LIST_ROW = 27;
+// opening animation: delay between two columns, link drawing, node appearance (ms)
+const PLAY_STEP = 520;
+const PLAY_DRAW = 380;
+const PLAY_POP = 260;
+// above this node count the map shows at once
+const PLAY_MAX = 400;
+// smallest zoom of the first view on a phone
+const PHONE_ZOOM = 0.75;
 
 export function nodeIcon(node) {
   switch (node.type) {
@@ -103,12 +99,12 @@ function userWeight(n) {
 }
 
 // full name in the last column, where there is room on the right
-function labelText(n, layout) {
-  return layout === "columns" && n.rank === 4 ? n.name : short(n.name);
+function labelText(n) {
+  return n.rank === 4 ? n.name : short(n.name);
 }
 
-function labelWidth(n, layout) {
-  return labelText(n, layout).length * 6.4;
+function labelWidth(n) {
+  return labelText(n).length * 6.4;
 }
 
 // Nodes reachable from id: up through lower ranks, down through higher ones. Within a rank, a caller
@@ -184,21 +180,6 @@ function esc(value) {
   );
 }
 
-// above this node count, forces are computed on a grid
-const GRID_FROM = 160;
-const CELL = 260;
-// half of the neighbouring cells, so that each pair of cells is visited once
-const HALF_NEIGHBOURS = [
-  [1, 0],
-  [-1, 1],
-  [0, 1],
-  [1, 1],
-];
-
-function cellKey(x, y) {
-  return (x + 32768) * 65536 + (y + 32768);
-}
-
 // inversion count (merge sort)
 function inversions(seq) {
   if (seq.length < 2) return 0;
@@ -221,170 +202,6 @@ function inversions(seq) {
   return count;
 }
 
-// Velocity Verlet with repulsion, springs and box collisions. Ties are hidden springs that keep each
-// node at its level's distance from its accounts.
-class Simulation {
-  constructor(nodes, links, ties = [], gravity = false) {
-    this.nodes = nodes;
-    this.links = links;
-    this.alpha = 1;
-    // fewer steps on large maps
-    this.decay = nodes.length < GRID_FROM ? 0.0228 : nodes.length < 600 ? 0.03 : 0.04;
-    this.target = 0;
-    const count = new Map();
-    for (const l of links) {
-      count.set(l.source, (count.get(l.source) || 0) + 1);
-      count.set(l.target, (count.get(l.target) || 0) + 1);
-    }
-    for (const l of links) {
-      const a = count.get(l.source);
-      const b = count.get(l.target);
-      l.strength = (l.weak ? 0.2 : 1) / Math.min(a, b);
-      l.bias = a / (a + b);
-    }
-    for (const n of nodes) n.charge = -260 - 50 * Math.min((count.get(n) || 0) + (n.items?.length || 0), 12);
-    this.springs = [...links, ...ties];
-    this.lists = nodes.filter((n) => n.items);
-    if (gravity) {
-      this.center = {
-        x: nodes.reduce((s, n) => s + n.x, 0) / nodes.length,
-        y: nodes.reduce((s, n) => s + n.y, 0) / nodes.length,
-      };
-    }
-  }
-
-  // repulsion and box collision
-  pair(p, q, alpha) {
-    // forces on a list move its parent
-    const P = p.items ? p.parent : p;
-    const Q = q.items ? q.parent : q;
-    if (P === Q) return;
-    let dx = q.x - p.x;
-    let dy = q.y - p.y;
-    let d2 = dx * dx + dy * dy;
-    if (d2 < 1e-6) {
-      dx = (hash(p.id + q.id) - 0.5) * 1e-3;
-      dy = (hash(q.id + p.id) - 0.5) * 1e-3;
-      d2 = dx * dx + dy * dy;
-    }
-    if (d2 < 640000) {
-      Q.vx += (dx * -p.charge * alpha) / d2 / 2;
-      Q.vy += (dy * -p.charge * alpha) / d2 / 2;
-      P.vx -= (dx * -q.charge * alpha) / d2 / 2;
-      P.vy -= (dy * -q.charge * alpha) / d2 / 2;
-    }
-    if (p.hw || q.hw) {
-      // boxes include the label
-      const ox = (p.hw || p.r + 9) + (q.hw || q.r + 9) - Math.abs(dx);
-      const oy = (p.hh || p.r + 9) + (q.hh || q.r + 9) - Math.abs(dy);
-      if (ox > 0 && oy > 0) {
-        const push = Math.min(ox, oy) * 0.35;
-        const px = ox < oy ? Math.sign(dx) * push : 0;
-        const py = ox < oy ? 0 : Math.sign(dy) * push;
-        Q.vx += px;
-        Q.vy += py;
-        P.vx -= px;
-        P.vy -= py;
-      }
-      return;
-    }
-    const min = p.r + q.r + 18;
-    if (d2 < min * min) {
-      const d = Math.sqrt(d2);
-      const push = ((min - d) / d) * 0.35;
-      Q.vx += dx * push;
-      Q.vy += dy * push;
-      P.vx -= dx * push;
-      P.vy -= dy * push;
-    }
-  }
-
-  tick() {
-    const alpha = this.alpha;
-    const nodes = this.nodes;
-    if (nodes.length < GRID_FROM) {
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) this.pair(nodes[i], nodes[j], alpha);
-      }
-    } else {
-      // only neighbouring cells interact; boxes larger than a cell are checked against every node
-      const grid = new Map();
-      const big = [];
-      for (const n of nodes) {
-        if ((n.hw || 0) > CELL / 2 || (n.hh || 0) > CELL / 2) {
-          big.push(n);
-          continue;
-        }
-        n.cx = Math.floor(n.x / CELL);
-        n.cy = Math.floor(n.y / CELL);
-        const key = cellKey(n.cx, n.cy);
-        if (!grid.has(key)) grid.set(key, []);
-        grid.get(key).push(n);
-      }
-      for (const cell of grid.values()) {
-        for (let i = 0; i < cell.length; i++) {
-          for (let j = i + 1; j < cell.length; j++) this.pair(cell[i], cell[j], alpha);
-        }
-        const { cx, cy } = cell[0];
-        for (const [ox, oy] of HALF_NEIGHBOURS) {
-          const other = grid.get(cellKey(cx + ox, cy + oy));
-          if (!other) continue;
-          for (const p of cell) for (const q of other) this.pair(p, q, alpha);
-        }
-      }
-      const boxes = new Set(big);
-      for (let i = 0; i < big.length; i++) {
-        for (let j = i + 1; j < big.length; j++) this.pair(big[i], big[j], alpha);
-        for (const n of nodes) if (!boxes.has(n)) this.pair(big[i], n, alpha);
-      }
-    }
-    for (const l of this.springs) {
-      const s = l.source;
-      const t = l.target;
-      let x = t.x + t.vx - s.x - s.vx;
-      let y = t.y + t.vy - s.y - s.vy;
-      const len = Math.sqrt(x * x + y * y) || 1e-6;
-      const k = ((len - l.length) / len) * alpha * l.strength;
-      x *= k;
-      y *= k;
-      t.vx -= x * l.bias;
-      t.vy -= y * l.bias;
-      s.vx += x * (1 - l.bias);
-      s.vy += y * (1 - l.bias);
-    }
-    const c = this.center;
-    let mid = 0;
-    for (const n of nodes) {
-      if (n.items) continue;
-      mid += n.x / (nodes.length - this.lists.length);
-      if (c) {
-        n.vx += (c.x - n.x) * 0.012 * alpha;
-        n.vy += (c.y - n.y) * 0.012 * alpha;
-      }
-      if (n.fx != null) {
-        n.x = n.fx;
-        n.y = n.fy;
-        n.vx = 0;
-        n.vy = 0;
-        continue;
-      }
-      n.vx *= 0.6;
-      n.vy *= 0.6;
-      n.x += n.vx;
-      n.y += n.vy;
-    }
-    // a list sits level with its parent, on the side away from the island centre
-    for (const b of this.lists) {
-      const p = b.parent;
-      if (p.x - mid > 30) b.right = true;
-      else if (p.x - mid < -30) b.right = false;
-      b.x = p.x + (b.right === false ? -1 : 1) * b.gap;
-      b.y = p.y;
-    }
-    this.alpha += (this.target - this.alpha) * this.decay;
-  }
-}
-
 const STYLES = `
   :host { display: block; position: relative; overflow: hidden; touch-action: none; user-select: none; }
   svg { width: 100%; height: 100%; display: block; cursor: grab; }
@@ -392,10 +209,9 @@ const STYLES = `
   .edge { fill: none; stroke-width: 1.6; stroke-linecap: round; transition: opacity .15s; }
   .edge.main { stroke-width: 3; }
   .edge.off { opacity: .35; }
-  .edge.bulk { opacity: .3; }
-  .edge.bulk.lit { opacity: 1; }
   .edge.broken { stroke: var(--error-color, #db4437) !important; stroke-dasharray: 4 4; }
   .node { cursor: pointer; transition: opacity .15s; }
+  .node .pop { transform-box: fill-box; transform-origin: center; }
   .node .ring { fill: none; stroke-width: 3; stroke: transparent; }
   .node.s-error .ring { stroke: var(--error-color, #db4437); }
   .node.s-warn .ring { stroke: var(--warning-color, #ffa600); }
@@ -427,9 +243,8 @@ export class ClanGraph extends HTMLElement {
     this._svg = this.shadowRoot.querySelector("svg");
     this._vp = this.shadowRoot.querySelector(".vp");
     this._view = { x: 0, y: 0, k: 1 };
-    this._layout = "force";
     this._visible = () => true;
-    this._pins = {};
+    this._anims = [];
     this._selected = null;
     this._query = "";
     this._pointers = new Map();
@@ -446,39 +261,20 @@ export class ClanGraph extends HTMLElement {
 
   disconnectedCallback() {
     this._resize?.disconnect();
-    cancelAnimationFrame(this._frame);
+    this._finish();
   }
 
-  // data: { nodes, edges } as built by the integration; options: layout, visible, pins, heads
+  // data: { nodes, edges } as built by the integration; options: visible, heads
   setData(data, options = {}) {
     this._data = data;
-    if (options.layout) this._layout = options.layout;
     if (options.visible) this._visible = options.visible;
-    if (options.pins) this._pins = options.pins;
     if (options.heads) this._columnHeads = options.heads;
     this._build();
-  }
-
-  setLayout(layout) {
-    this._layout = layout;
-    this._build();
-    this.fit();
   }
 
   setVisible(visible) {
     this._visible = visible;
     this._build();
-  }
-
-  resetPins() {
-    this._pins = {};
-    this._build();
-    this.fit();
-    return this._pins;
-  }
-
-  get pins() {
-    return this._pins;
   }
 
   select(id, center = false) {
@@ -509,7 +305,7 @@ export class ClanGraph extends HTMLElement {
 
   _build() {
     if (!this._data) return;
-    cancelAnimationFrame(this._frame);
+    this._finish();
     const nodes = this._data.nodes.filter((n) => this._visible(n));
     const byId = new Map();
     for (const raw of nodes) {
@@ -519,23 +315,21 @@ export class ClanGraph extends HTMLElement {
         rank: RANK[raw.type] ?? 2,
         x: 0,
         y: 0,
-        vx: 0,
-        vy: 0,
         side: "below",
       };
-      const pin = this._layout === "force" ? this._pins[raw.id] : null;
-      if (pin) {
-        n.x = n.fx = pin[0];
-        n.y = n.fy = pin[1];
-      }
       byId.set(n.id, n);
     }
     const edges = [];
     for (const e of this._data.edges) {
       const source = byId.get(e.from);
       const target = byId.get(e.to);
-      if (source && target) edges.push({ ...e, source, target, length: LENGTH[e.type] || 100 });
+      if (source && target) edges.push({ ...e, source, target });
     }
+    // button and sensor links that share their two nodes with another link are drawn beside it
+    const pair = (e) => [e.source.id, e.target.id].sort().join(">");
+    const shared = new Map();
+    for (const e of edges) shared.set(pair(e), (shared.get(pair(e)) || 0) + 1);
+    for (const e of edges) e.offset = shared.get(pair(e)) > 1 ? SIDE_OFFSET[e.type] || 0 : 0;
     this._nodes = [...byId.values()];
     this._byId = byId;
     this._edges = edges;
@@ -548,233 +342,15 @@ export class ClanGraph extends HTMLElement {
     }
     if (this._selected && !byId.has(this._selected)) this._selected = null;
 
-    this._ties = [];
-    this._listsAll = [];
-    this._sim = null;
-    if (this._layout === "columns") this._columns();
-    else this._force();
+    this._columns();
     this._render();
     this._highlight();
-  }
-
-  _islands() {
-    const seen = new Set();
-    const groups = [];
-    for (const start of this._nodes) {
-      if (seen.has(start.id)) continue;
-      const group = this._island(start);
-      for (const n of group) seen.add(n.id);
-      groups.push(group);
-    }
-    return groups;
-  }
-
-  // Radial layout around each account: person and devices on the first ring, the rest further out.
-  // Small islands without a person go to a side column.
-  _force() {
-    const main = [];
-    const side = [];
-    for (const g of this._islands()) {
-      const pinned = g.some((n) => this._pins[n.id]);
-      const small = g.length <= SMALL && !g.some((n) => n.type === "person");
-      (small && !pinned ? side : main).push(g);
-    }
-    for (const e of this._edges) {
-      // secondary links are weak, unless they are a node's only link
-      const alone = [e.source, e.target].some((n) => this._adjacent.get(n.id).length === 1);
-      e.bulk = e.source.kind === "app_all";
-      e.weak = !alone && (e.bulk || e.type === "watches" || e.type === "mentions");
-    }
-    for (const n of this._nodes) {
-      // collision box including the label
-      n.hw = Math.max(n.r + 8, labelWidth(n, "force") / 2 + 6);
-      n.hh = n.r + 16;
-    }
-    for (const g of main) {
-      const ties = this._levels(g);
-      g.lists = this._lists(g);
-      for (const b of g.lists) {
-        b.right = Math.cos(b.parent.angle ?? 0) >= 0;
-        b.x = b.parent.x + (b.right ? 1 : -1) * b.gap;
-        b.y = b.parent.y;
-      }
-      this._ties.push(...ties);
-      const sim = this._simulation(g, true);
-      // settle before the first render
-      while (sim.alpha > 0.002) sim.tick();
-      for (const b of g.lists) this._dock(b);
-      // labels below nodes, beside them in lists
-      for (const n of g) n.side = n.fixedSide || "below";
-    }
-    const box = this._pack(main);
-    this._lane(side, box);
-  }
-
-  // simulation of one island; each list is a single box
-  _simulation(group, gravity) {
-    const lists = this._listsOf(group);
-    const nodes = [...group.filter((n) => !n.dock && !n.listed), ...lists];
-    const inside = new Set(nodes);
-    const links = this._edges.filter((e) => inside.has(e.source) && inside.has(e.target));
-    return new Simulation(
-      nodes,
-      links,
-      this._ties.filter((t) => inside.has(t.target)),
-      gravity,
-    );
-  }
-
-  _listsOf(group) {
-    const parents = new Set(group);
-    return this._listsAll.filter((b) => parents.has(b.parent));
-  }
-
-  // Routines whose only link goes to the same node, three or more, become a list beside that node.
-  _lists(group) {
-    const leaves = new Map();
-    for (const n of group) {
-      const links = this._adjacent.get(n.id) || [];
-      if (n.type !== "routine" || links.length !== 1 || this._pins[n.id]) continue;
-      const p = links[0].source === n ? links[0].target : links[0].source;
-      if (p.rank >= n.rank) continue;
-      if (!leaves.has(p)) leaves.set(p, []);
-      leaves.get(p).push(n);
-    }
-    const lists = [];
-    for (const [parent, items] of leaves) {
-      if (items.length < 3) continue;
-      items.sort((a, b) => a.name.localeCompare(b.name));
-      const w = 2 * RADIUS.routine + 8 + Math.max(...items.map((n) => labelWidth(n, "force")));
-      const h = items.length * LIST_ROW + 8;
-      const b = { id: `list:${parent.id}`, parent, items, hw: w / 2, hh: h / 2, x: 0, y: 0 };
-      // distance grows with the list length
-      b.gap = parent.r + 30 + 5 * items.length + b.hw;
-      for (const n of items) n.listed = true;
-      lists.push(b);
-    }
-    this._listsAll.push(...lists);
-    return lists;
-  }
-
-  // place the items inside the list box; again when the list changes side
-  _dock(b) {
-    b.docked = b.right;
-    const x = b.right ? -b.hw + RADIUS.routine : b.hw - RADIUS.routine;
-    b.items.forEach((n, i) => {
-      n.fixedSide = b.right ? "right" : "left";
-      n.side = n.fixedSide;
-      n.dock = { list: b, dx: x, dy: -b.hh + 4 + LIST_ROW / 2 + i * LIST_ROW };
-      n.x = b.x + n.dock.dx;
-      n.y = b.y + n.dock.dy;
-    });
-  }
-
-  // BFS from the accounts: level and owners of each node, initial positions, and the ties.
-  _levels(group) {
-    let roots = group.filter((n) => n.type === "user");
-    if (!roots.length) {
-      const top = Math.min(...group.map((n) => n.rank));
-      roots = group.filter((n) => n.rank === top);
-    }
-    roots.sort((a, b) => userWeight(a) - userWeight(b) || a.name.localeCompare(b.name));
-    for (const n of group) {
-      n.level = Infinity;
-      n.owners = [];
-    }
-    const queue = [];
-    const spread = roots.length > 1 ? Math.max(2 * RING, roots.length * 80) : 0;
-    roots.forEach((n, i) => {
-      n.level = 0;
-      n.owners = [n];
-      n.angle = -Math.PI / 2 + (2 * Math.PI * i) / roots.length;
-      n.x = spread * Math.cos(n.angle);
-      n.y = spread * Math.sin(n.angle);
-      queue.push(n);
-    });
-    const children = new Map();
-    for (let i = 0; i < queue.length; i++) {
-      const cur = queue[i];
-      const next = (this._adjacent.get(cur.id) || [])
-        .map((e) => (e.source === cur ? e.target : e.source))
-        .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
-      for (const m of next) {
-        if (m.level === Infinity) {
-          m.level = cur.level + 1;
-          m.owners = [...cur.owners];
-          if (!children.has(cur)) children.set(cur, []);
-          children.get(cur).push(m);
-          queue.push(m);
-        } else if (m.level === cur.level + 1) {
-          for (const o of cur.owners) if (!m.owners.includes(o)) m.owners.push(o);
-        }
-      }
-    }
-    // initial positions: children spread out from their parent
-    for (const cur of queue) {
-      const kids = children.get(cur) || [];
-      const fan = cur.level === 0 ? 2 * Math.PI : Math.min(Math.PI * 0.9, kids.length * 0.35);
-      kids.forEach((m, i) => {
-        m.angle = cur.angle + (kids.length > 1 ? (i / (kids.length - (cur.level === 0 ? 0 : 1)) - 0.5) * fan : 0);
-        m.x = cur.x + RING * Math.cos(m.angle) + (hash(m.id) - 0.5) * 4;
-        m.y = cur.y + RING * Math.sin(m.angle) + (hash(`${m.id}y`) - 0.5) * 4;
-      });
-    }
-    const pins = group.filter((n) => n.fx != null);
-    if (pins.length) {
-      // a pinned island stays where it was left
-      const dx = pins.reduce((s, n) => s + this._pins[n.id][0] - n.x, 0) / pins.length;
-      const dy = pins.reduce((s, n) => s + this._pins[n.id][1] - n.y, 0) / pins.length;
-      for (const n of group) {
-        if (n.fx != null) continue;
-        n.x += dx;
-        n.y += dy;
-      }
-      for (const n of pins) {
-        n.x = n.fx;
-        n.y = n.fy;
-      }
-    }
-    const ties = [];
-    for (const n of group) {
-      if (!n.level || n.level === Infinity || n.owners.length > 4) continue;
-      for (const o of n.owners) {
-        ties.push({ source: o, target: n, length: RING * n.level, strength: 0.6 / n.owners.length, bias: 0.9 });
-      }
-    }
-    return ties;
-  }
-
-  // Shelf packing of the islands, largest first.
-  _pack(groups) {
-    const boxes = groups.map((g) => ({ g, ...this._box(g) }));
-    const free = boxes
-      .filter((b) => !b.g.some((n) => n.fx != null))
-      .sort((a, b) => b.g.length - a.g.length || b.w * b.h - a.w * a.h);
-    const area = free.reduce((s, b) => s + b.w * b.h, 0);
-    const width = Math.max(free[0]?.w || 0, Math.sqrt(area) * 1.5);
-    let x = 0;
-    let y = 0;
-    let row = 0;
-    for (const b of free) {
-      if (x > 0 && x + b.w > width) {
-        x = 0;
-        y += row + 20;
-        row = 0;
-      }
-      for (const n of [...b.g, ...(b.g.lists || [])]) {
-        n.x += x - b.x0;
-        n.y += y - b.y0;
-      }
-      x += b.w + 20;
-      row = Math.max(row, b.h);
-    }
-    return this._box(groups.flat());
   }
 
   _box(nodes) {
     const box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     for (const n of nodes) {
-      const w = labelWidth(n, this._layout);
+      const w = labelWidth(n);
       const left = n.side === "left" ? w + 8 : n.side === "right" ? 0 : w / 2;
       const right = n.side === "right" ? w + 8 : n.side === "left" ? 0 : w / 2;
       box.x0 = Math.min(box.x0, n.x - n.r - left);
@@ -785,56 +361,6 @@ export class ClanGraph extends HTMLElement {
     box.w = box.x1 - box.x0;
     box.h = box.y1 - box.y0;
     return box;
-  }
-
-  // Small islands, laid out left to right and stacked in columns on the right.
-  _lane(groups, box) {
-    if (!groups.length) return;
-    const blocks = groups.map((g) => {
-      const root = [...g].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name))[0];
-      const depth = new Map([[root, 0]]);
-      const order = [root];
-      for (let i = 0; i < order.length; i++) {
-        for (const e of this._adjacent.get(order[i].id) || []) {
-          const other = e.source === order[i] ? e.target : e.source;
-          if (depth.has(other)) continue;
-          depth.set(other, depth.get(order[i]) + 1);
-          order.push(other);
-        }
-      }
-      const cols = [];
-      for (const n of order) (cols[depth.get(n)] ||= []).push(n);
-      cols.forEach((col, d) =>
-        col.forEach((n, i) => {
-          n.x = d * LANE_STEP;
-          n.y = (i - (col.length - 1) / 2) * LANE_ROW;
-          n.fixedSide = d === cols.length - 1 ? "right" : "below";
-          n.side = n.fixedSide;
-        }),
-      );
-      return { g, root, ...this._box(g) };
-    });
-    blocks.sort(
-      (a, b) => a.root.rank - b.root.rank || a.g.length - b.g.length || a.root.name.localeCompare(b.root.name),
-    );
-    const top = Number.isFinite(box.y0) ? box.y0 : 0;
-    const height = Math.max(Number.isFinite(box.h) ? box.h : 0, 360);
-    let x = Number.isFinite(box.x1) ? box.x1 + 80 : 0;
-    let y = top;
-    let width = 0;
-    for (const b of blocks) {
-      if (y > top && y + b.h > top + height) {
-        x += width + 40;
-        y = top;
-        width = 0;
-      }
-      for (const n of b.g) {
-        n.x += x - b.x0;
-        n.y += y - b.y0;
-      }
-      y += b.h + 14;
-      width = Math.max(width, b.w);
-    }
   }
 
   _columns() {
@@ -929,11 +455,7 @@ export class ClanGraph extends HTMLElement {
     };
     for (const n of this._nodes) n.y = NaN;
     cols.forEach((col, r) => {
-      for (const n of col) {
-        n.x = r * COLUMN_GAP;
-        n.fx = null;
-        n.fy = null;
-      }
+      for (const n of col) n.x = r * COLUMN_GAP;
       if (r === 0) col.forEach((n, i) => (n.y = (i - (col.length - 1) / 2) * gaps[0]));
       else settle(col, gaps[r], new Map(col.map((n) => [n.id, mean(near(n, true))])));
     });
@@ -964,25 +486,20 @@ export class ClanGraph extends HTMLElement {
       `${defs}<marker id="arrow-broken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--error-color, #db4437)"/></marker>`;
 
     let heads = "";
-    if (this._layout === "columns" && this._columnHeads.length) {
+    if (this._columnHeads.length) {
       heads = this._columnHeads
         .map((label, r) =>
           this._colTops?.[r] == null
             ? ""
-            : `<text class="col-head" x="${r * COLUMN_GAP}" y="${this._colTops[r]}">${esc(label)}</text>`,
+            : `<text class="col-head" data-r="${r}" x="${r * COLUMN_GAP}" y="${this._colTops[r]}">${esc(label)}</text>`,
         )
         .join("");
     }
     const edges = this._edges
       .map((e, i) => {
-        const cls = [
-          "edge",
-          `t-${e.type}`,
-          e.main ? "main" : "",
-          e.off ? "off" : "",
-          e.broken ? "broken" : "",
-          e.bulk && this._layout === "force" ? "bulk" : "",
-        ].join(" ");
+        const cls = ["edge", `t-${e.type}`, e.main ? "main" : "", e.off ? "off" : "", e.broken ? "broken" : ""].join(
+          " ",
+        );
         const marker = e.broken ? "arrow-broken" : ARROWS.has(e.type) ? `arrow-${e.type}` : "";
         return `<path class="${cls}" data-i="${i}" stroke="${EDGE_COLORS[e.type] || "#999"}"
           ${EDGE_DASH[e.type] ? `stroke-dasharray="${EDGE_DASH[e.type]}"` : ""}
@@ -1027,7 +544,7 @@ export class ClanGraph extends HTMLElement {
         <path d="${ICONS.sleep}" transform="translate(-6,-6) scale(.5)"/></g>`
       : "";
     return `<g class="${cls}" data-id="${esc(n.id)}"><title>${esc(n.name)}</title>
-      <circle class="ring" r="${n.r + 4}"/>${body}${badge}${sleep}<text class="label">${esc(labelText(n, this._layout))}</text></g>`;
+      <g class="pop"><circle class="ring" r="${n.r + 4}"/>${body}${badge}${sleep}</g><text class="label">${esc(labelText(n))}</text></g>`;
   }
 
   _label(n, el) {
@@ -1042,16 +559,9 @@ export class ClanGraph extends HTMLElement {
   }
 
   _place() {
-    for (const b of this._listsAll || []) {
-      if (b.docked !== b.right) this._dock(b);
-    }
     for (const n of this._nodes) {
       const el = this._nodeEls.get(n.id);
       if (!el) continue;
-      if (n.dock) {
-        n.x = n.dock.list.x + n.dock.dx;
-        n.y = n.dock.list.y + n.dock.dy;
-      }
       el.setAttribute("transform", `translate(${n.x},${n.y})`);
       const label = el.lastElementChild;
       if (label.dataset.side !== n.side) this._label(n, label);
@@ -1063,26 +573,92 @@ export class ClanGraph extends HTMLElement {
     const s = e.source;
     const t = e.target;
     const pad = ARROWS.has(e.type) || e.broken ? 5 : 2;
-    if (this._layout === "columns") {
-      if (s.rank === t.rank) {
-        // same column: arc on the right
-        const x1 = s.x + s.r;
-        const x2 = t.x + t.r + pad;
-        const bend = 46 + Math.min(Math.abs(t.y - s.y) / 4, 60);
-        return `M${x1},${s.y} C${x1 + bend},${s.y} ${x2 + bend},${t.y} ${x2},${t.y}`;
-      }
-      const dir = t.x > s.x ? 1 : -1;
-      const x1 = s.x + dir * s.r;
-      const x2 = t.x - dir * (t.r + pad);
-      const mid = (x1 + x2) / 2;
-      return `M${x1},${s.y} C${mid},${s.y} ${mid},${t.y} ${x2},${t.y}`;
+    const o = e.offset;
+    if (s.rank === t.rank) {
+      // same column: arc on the right
+      const x1 = s.x + s.r;
+      const x2 = t.x + t.r + pad;
+      const bend = 46 + Math.min(Math.abs(t.y - s.y) / 4, 60);
+      return `M${x1},${s.y} C${x1 + bend},${s.y} ${x2 + bend},${t.y} ${x2},${t.y}`;
     }
-    const dx = t.x - s.x;
-    const dy = t.y - s.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-    return `M${s.x + ux * s.r},${s.y + uy * s.r} L${t.x - ux * (t.r + pad)},${t.y - uy * (t.r + pad)}`;
+    const dir = t.x > s.x ? 1 : -1;
+    const x1 = s.x + dir * s.r;
+    const x2 = t.x - dir * (t.r + pad);
+    const mid = (x1 + x2) / 2;
+    return `M${x1},${s.y + o} C${mid},${s.y + o} ${mid},${t.y + o} ${x2},${t.y + o}`;
+  }
+
+  // Opening animation: the columns appear from accounts to automations, each link drawn from left to
+  // right until it reaches the node that appears next.
+  play() {
+    this._finish();
+    if (!this._nodes?.length || this._nodes.length > PLAY_MAX) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const once = { fill: "backwards", easing: "ease-out" };
+    const start = new Map();
+    const cols = [[], [], [], [], []];
+    for (const n of this._nodes) cols[n.rank].push(n);
+    cols.forEach((col, r) => {
+      col.sort((a, b) => a.y - b.y);
+      const gap = Math.min(45, 360 / col.length);
+      col.forEach((n, i) => start.set(n.id, 150 + r * PLAY_STEP + i * gap));
+    });
+    const anims = [];
+    for (const el of this._vp.querySelectorAll(".col-head")) {
+      const delay = Number(el.dataset.r) * PLAY_STEP;
+      anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: 400, delay }));
+    }
+    for (const n of this._nodes) {
+      const el = this._nodeEls.get(n.id);
+      if (!el) continue;
+      const delay = start.get(n.id);
+      anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: PLAY_POP, delay }));
+      anims.push(
+        el
+          .querySelector(".pop")
+          .animate([{ transform: "scale(.3)" }, { transform: "scale(1.15)", offset: 0.7 }, { transform: "scale(1)" }], {
+            ...once,
+            duration: PLAY_POP + 120,
+            delay,
+          }),
+      );
+    }
+    this._edges.forEach((e, i) => {
+      const el = this._edgeEls[i];
+      if (!el) return;
+      const [a, b] = e.source.rank <= e.target.rank ? [e.source, e.target] : [e.target, e.source];
+      const end = Math.max(start.get(a.id) + PLAY_POP, start.get(b.id));
+      const delay = Math.max(0, end - PLAY_DRAW);
+      if (el.hasAttribute("stroke-dasharray")) {
+        anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { ...once, duration: PLAY_DRAW, delay }));
+        return;
+      }
+      // solid line drawn from its left end, arrow head added at the end
+      const len = el.getTotalLength();
+      const from = e.source === a ? len : -len;
+      const dash = `${len} ${len}`;
+      const anim = el.animate(
+        [
+          { strokeDasharray: dash, strokeDashoffset: from },
+          { strokeDasharray: dash, strokeDashoffset: 0 },
+        ],
+        { ...once, duration: PLAY_DRAW, delay, easing: "ease-in-out" },
+      );
+      const marker = el.getAttribute("marker-end");
+      if (marker) {
+        el.removeAttribute("marker-end");
+        const back = () => el.setAttribute("marker-end", marker);
+        anim.finished.then(back, back);
+      }
+      anims.push(anim);
+    });
+    this._anims = anims;
+  }
+
+  // jump to the end of the opening animation
+  _finish() {
+    for (const a of this._anims || []) a.finish();
+    this._anims = [];
   }
 
   // highlight
@@ -1144,26 +720,28 @@ export class ClanGraph extends HTMLElement {
   // fit the whole map, or the given ids
   fit(ids = null) {
     if (!this._nodes?.length || !this.clientWidth) return;
-    if (!ids && this.clientWidth < 600 && this._layout === "force") {
-      // narrow screens start on the largest island
-      const largest = this._nodes.reduce((best, n) => {
-        const island = this._island(n);
-        return island.length > best.length ? island : best;
-      }, []);
-      this._fitted = true;
-      return this.fit(new Set(largest.map((n) => n.id)));
-    }
     const nodes = ids ? this._nodes.filter((n) => ids.has(n.id)) : this._nodes;
     if (!nodes.length) return;
     if (!ids) this._fitted = true;
     let { x0, y0, x1, y1 } = this._box(nodes);
     x0 -= 10;
     x1 += 10;
-    y0 -= this._layout === "columns" ? 50 : 10;
+    y0 -= 50;
     y1 += 6;
     const w = this.clientWidth;
     const h = this.clientHeight;
     const k = Math.min(ids ? 1.1 : 1.4, Math.max(0.15, Math.min(w / (x1 - x0), h / (y1 - y0)) * 0.95));
+    if (!ids && w < 600 && k < PHONE_ZOOM) {
+      // on a phone: accounts column at a readable zoom, pan for the rest
+      const tall = (y1 - y0) * PHONE_ZOOM > h;
+      this._view = {
+        k: PHONE_ZOOM,
+        x: 8 - x0 * PHONE_ZOOM,
+        y: tall ? 8 - y0 * PHONE_ZOOM : h / 2 - ((y0 + y1) / 2) * PHONE_ZOOM,
+      };
+      this._applyView();
+      return;
+    }
     this._view = { k, x: w / 2 - ((x0 + x1) / 2) * k, y: h / 2 - ((y0 + y1) / 2) * k };
     this._applyView();
   }
@@ -1191,32 +769,6 @@ export class ClanGraph extends HTMLElement {
     return { x: (p.x - this._view.x) / this._view.k, y: (p.y - this._view.y) / this._view.k };
   }
 
-  _island(start) {
-    const out = [start];
-    const seen = new Set([start.id]);
-    for (let i = 0; i < out.length; i++) {
-      for (const e of this._adjacent.get(out[i].id) || []) {
-        const other = e.source === out[i] ? e.target : e.source;
-        if (!seen.has(other.id)) {
-          seen.add(other.id);
-          out.push(other);
-        }
-      }
-    }
-    return out;
-  }
-
-  _animate() {
-    cancelAnimationFrame(this._frame);
-    const step = () => {
-      if (!this._sim) return;
-      this._sim.tick();
-      this._place();
-      if (this._sim.alpha > 0.004 || this._sim.target > 0) this._frame = requestAnimationFrame(step);
-    };
-    this._frame = requestAnimationFrame(step);
-  }
-
   _bind() {
     const svg = this._svg;
     svg.addEventListener(
@@ -1232,6 +784,7 @@ export class ClanGraph extends HTMLElement {
       if (!ev.target.closest(".node")) this.fit();
     });
     svg.addEventListener("pointerdown", (ev) => {
+      this._finish();
       const p = this._point(ev);
       this._pointers.set(ev.pointerId, p);
       try {
@@ -1278,30 +831,7 @@ export class ClanGraph extends HTMLElement {
       const w = this._world(p);
       d.node.x = w.x + d.dx;
       d.node.y = w.y + d.dy;
-      if (d.node.dock) {
-        // a list item moves alone and keeps its new offset
-        d.node.dock.dx = d.node.x - d.node.dock.list.x;
-        d.node.dock.dy = d.node.y - d.node.dock.list.y;
-        this._place();
-        return;
-      }
-      d.node.fx = d.node.x;
-      d.node.fy = d.node.y;
-      if (this._layout === "force" && !this._sim?.nodes.includes(d.node)) {
-        // simulate only the dragged node's island
-        this._sim = this._simulation(this._island(d.node), false);
-        this._sim.alpha = 0.12;
-      }
-      if (this._sim) {
-        this._sim.target = 0.12;
-        if (this._sim.alpha < 0.12) this._sim.alpha = 0.12;
-        if (!d.running) {
-          d.running = true;
-          this._animate();
-        }
-      } else {
-        this._place();
-      }
+      this._place();
     });
     const end = (ev) => {
       this._pointers.delete(ev.pointerId);
@@ -1314,18 +844,6 @@ export class ClanGraph extends HTMLElement {
         const id = d.node ? d.node.id : null;
         this.select(id);
         this.dispatchEvent(new CustomEvent("node-select", { detail: { id } }));
-        return;
-      }
-      if (d.node && this._layout === "force") {
-        if (this._sim) {
-          this._sim.target = 0;
-          const sim = this._sim;
-          setTimeout(() => {
-            if (this._sim === sim && sim.alpha < 0.005) this._sim = null;
-          }, 3000);
-        }
-        this._pins = { ...this._pins, [d.node.id]: [Math.round(d.node.x), Math.round(d.node.y)] };
-        this.dispatchEvent(new CustomEvent("pins-changed", { detail: { pins: this._pins } }));
       }
     };
     svg.addEventListener("pointerup", end);

@@ -7,11 +7,10 @@
 
 A Home Assistant panel that answers, on one screen, who can sign in, who is followed, and who gets notified.
 
-![Clan: the map of a family, its dormant phones, and the clean-up in Home Assistant](docs/demo.gif)
+![Clan: a family's map building itself, then Léo's branch from his account to the gate his phone can open](docs/demo.gif)
 
 Clan reads the users, people, companion app registrations, notification services, automations, scripts
-and alerts of your instance, and draws the links between them as a map, in the manner of the Zigbee network
-maps:
+and alerts of your instance, and draws the links between them in columns, from accounts to automations:
 
 - users and their role (owner, administrator, user, system account), sign-in methods, two-factor
   authentication, long-lived tokens, and when each user was last active;
@@ -19,14 +18,15 @@ maps:
 - the phones, watches and tablets signed in to the companion app, and by which user;
 - every automation, script and alert that sends a notification, and the device it reaches, directly, through
   a notification group, or through `notify.notify`, which reaches every phone;
-- the automations that use someone's presence.
+- the automations that use someone's presence, or a sensor of a phone (next alarm, charging, Wi-Fi);
+- what a phone can run from a notification button, such as opening the gate from the doorbell
+  notification.
 
 The panel has three views:
 
-- Map: a graph in levels around each account, its person and devices first, then what reaches them,
-  with the automations that only notify one phone listed beside it and the small unrelated groups set
-  aside on the right; or columns from accounts to automations. Click a node to light up what it leads to,
-  towards the accounts and towards the automations, and to read its details. From there, or from a card of
+- Map: five columns read from left to right, users, people, devices, notifications and automations. On a
+  computer, the map builds itself column by column when the panel opens. Click a node to light up what it
+  leads to, towards the accounts and towards the automations, and to read its details. From there, or from a card of
   the next view, Isolate keeps only that branch on the map, and Hide takes the node off the map
   with whatever only hangs from it: hiding a child's account removes their person and phones, while a
   service that also reaches other phones stays. A person and its account count as one. The choice is
@@ -75,6 +75,8 @@ integration.
 | `notify.notify` | every phone that can receive push notifications |
 | messaging | `telegram_bot.send_*`, Matrix and other `*.send_message` actions, `mastodon.post`: one node per integration |
 | presence | `person.*` and tracker entities named in an automation |
+| phone sensor | companion app entities named in an automation (next alarm, battery, Wi-Fi...) |
+| notification button | a notification with `actions` and the automation or script waiting for that action (`mobile_app_notification_action` trigger or `wait_for_trigger`) |
 
 Templates are read where a target can be told from them (a device id in a default value, for instance).
 A notification whose service is a template (`notify.{{ ... }}`) gets a node of its own, which says that whom it
@@ -86,12 +88,6 @@ To find which integration owns a notification service and what automations, scri
 reads a few structures that are internal to Home Assistant. Each time the map is drawn it checks they are
 still there. If a release has moved one, a banner at the top of the panel lists what the map can no longer
 show, and a warning is logged once.
-
-## Large homes
-
-The map stays usable on large instances: a made-up household of 30 users, 80 phones and 600 automations
-(837 nodes) is laid out in about half a second, 2,000 nodes in under two seconds, and the graph is built off
-Home Assistant's event loop. At that size the graph is dense; use Isolate, the search or the columns.
 
 ## Languages
 
