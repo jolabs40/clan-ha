@@ -99,11 +99,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config={"version": version},
         require_admin=True,
     )
+    # the card loads on every dashboard, without a resource to declare
+    data["card"] = f"{STATIC_URL}/clan-card.js?v={version}"
+    frontend.add_extra_js_url(hass, data["card"])
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     frontend.async_remove_panel(hass, PANEL_URL)
+    if card := hass.data[DOMAIN].pop("card", None):
+        frontend.remove_extra_js_url(hass, card)
     return True
 
 

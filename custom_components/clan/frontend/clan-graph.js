@@ -4,7 +4,8 @@ const V = new URL(import.meta.url).search;
 const { ICONS } = await import(`./clan-icons.js${V}`);
 
 // column of each node type, accounts first
-export const RANK = { user: 0, person: 1, device: 2, tracker: 2, notify: 3, ui: 3, routine: 4 };
+export const RANK = { user: 0, person: 1, device: 2, tracker: 2, notify: 3, ui: 3, routine: 4, access: 5 };
+const COLUMNS = 6;
 export const COLORS = {
   user: "#1e88e5",
   person: "#43a047",
@@ -13,6 +14,7 @@ export const COLORS = {
   notify: "#ef6c00",
   ui: "#0288d1",
   routine: "#607d8b",
+  access: "#c62828",
 };
 export const EDGE_COLORS = {
   account: "#1e88e5",
@@ -25,6 +27,7 @@ export const EDGE_COLORS = {
   mentions: "#78909c",
   answers: "#d81b60",
   reads: "#00897b",
+  controls: "#c62828",
 };
 export const EDGE_DASH = {
   registered: "5 4",
@@ -34,7 +37,7 @@ export const EDGE_DASH = {
   reads: "6 3",
 };
 const RADIUS = { user: 20, person: 22, device: 17, tracker: 14, notify: 15, ui: 17, routine: 12 };
-const ARROWS = new Set(["notifies", "includes", "calls", "answers"]);
+const ARROWS = new Set(["notifies", "includes", "calls", "answers", "controls"]);
 // vertical shift of a link drawn beside another between the same nodes
 const SIDE_OFFSET = { answers: 7, reads: -7 };
 const COLUMN_GAP = 250;
@@ -68,6 +71,8 @@ export function nodeIcon(node) {
       );
     case "ui":
       return ICONS.ui;
+    case "access":
+      return ICONS[node.kind] || ICONS.door;
     default:
       return ICONS[node.kind] || ICONS.automation;
   }
@@ -100,7 +105,7 @@ function userWeight(n) {
 
 // full name in the last column, where there is room on the right
 function labelText(n) {
-  return n.rank === 4 ? n.name : short(n.name);
+  return n.rank >= 4 ? n.name : short(n.name);
 }
 
 function labelWidth(n) {
@@ -364,10 +369,10 @@ export class ClanGraph extends HTMLElement {
   }
 
   _columns() {
-    const cols = [[], [], [], [], []];
+    const cols = Array.from({ length: COLUMNS }, () => []);
     for (const n of this._nodes) {
       cols[n.rank].push(n);
-      n.side = n.rank === 4 ? "right" : "below";
+      n.side = n.rank >= 4 ? "right" : "below";
     }
     cols[0].sort((a, b) => userWeight(a) - userWeight(b) || a.name.localeCompare(b.name));
     for (const col of cols.slice(1)) col.sort((a, b) => a.name.localeCompare(b.name));
@@ -413,12 +418,12 @@ export class ClanGraph extends HTMLElement {
     index();
     keep();
     for (let pass = 0; pass < 6; pass++) {
-      for (let r = 1; r < 5; r++) {
+      for (let r = 1; r < COLUMNS; r++) {
         sweep(cols[r], -1);
         index();
       }
       keep();
-      for (let r = 3; r >= 0; r--) {
+      for (let r = COLUMNS - 2; r >= 0; r--) {
         if (r === 0) continue; // the account column keeps its sort order
         sweep(cols[r], 1);
         index();
@@ -430,7 +435,10 @@ export class ClanGraph extends HTMLElement {
     });
     index();
     // y: mean of the linked nodes on the left, without overlap
-    const gaps = [64, 64, 56, 56, 36];
+    const gaps = [64, 64, 56, 56, 36, 56];
+    // the access column starts after the longest automation name
+    const names = Math.max(0, ...cols[4].map((n) => labelWidth(n)));
+    this._colX = cols.map((_col, r) => (r < 5 ? r * COLUMN_GAP : 4 * COLUMN_GAP + names + 110));
     const near = (n, lower) =>
       (this._adjacent.get(n.id) || [])
         .map((e) => (e.source === n ? e.target : e.source))
@@ -455,7 +463,7 @@ export class ClanGraph extends HTMLElement {
     };
     for (const n of this._nodes) n.y = NaN;
     cols.forEach((col, r) => {
-      for (const n of col) n.x = r * COLUMN_GAP;
+      for (const n of col) n.x = this._colX[r];
       if (r === 0) col.forEach((n, i) => (n.y = (i - (col.length - 1) / 2) * gaps[0]));
       else settle(col, gaps[r], new Map(col.map((n) => [n.id, mean(near(n, true))])));
     });
@@ -491,7 +499,7 @@ export class ClanGraph extends HTMLElement {
         .map((label, r) =>
           this._colTops?.[r] == null
             ? ""
-            : `<text class="col-head" data-r="${r}" x="${r * COLUMN_GAP}" y="${this._colTops[r]}">${esc(label)}</text>`,
+            : `<text class="col-head" data-r="${r}" x="${this._colX[r]}" y="${this._colTops[r]}">${esc(label)}</text>`,
         )
         .join("");
     }
@@ -582,7 +590,8 @@ export class ClanGraph extends HTMLElement {
       return `M${x1},${s.y} C${x1 + bend},${s.y} ${x2 + bend},${t.y} ${x2},${t.y}`;
     }
     const dir = t.x > s.x ? 1 : -1;
-    const x1 = s.x + dir * s.r;
+    // a link from an automation leaves after its name
+    const x1 = s.x + dir * s.r + (s.rank === 4 && dir > 0 ? labelWidth(s) + 10 : 0);
     const x2 = t.x - dir * (t.r + pad);
     const mid = (x1 + x2) / 2;
     return `M${x1},${s.y + o} C${mid},${s.y + o} ${mid},${t.y + o} ${x2},${t.y + o}`;
@@ -598,7 +607,7 @@ export class ClanGraph extends HTMLElement {
     // fade up to the element's own opacity, so that dimmed nodes stay dimmed
     const fade = (el) => [{ opacity: 0 }, { opacity: getComputedStyle(el).opacity }];
     const start = new Map();
-    const cols = [[], [], [], [], []];
+    const cols = Array.from({ length: COLUMNS }, () => []);
     for (const n of this._nodes) cols[n.rank].push(n);
     cols.forEach((col, r) => {
       col.sort((a, b) => a.y - b.y);

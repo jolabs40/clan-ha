@@ -31,6 +31,17 @@ ENTITY_RE = re.compile(r"\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b")
 BUTTON_EVENTS = {"mobile_app_notification_action": "action", "ios.notification_action_fired": "actionName"}
 # a button that opens a page fires no event
 BUTTON_SKIP = {"URI"}
+# actions that let someone in
+OPENING = {
+    "cover.open_cover",
+    "cover.toggle",
+    "cover.set_cover_position",
+    "lock.unlock",
+    "lock.open",
+    "alarm_control_panel.alarm_disarm",
+    "homeassistant.toggle",
+    "homeassistant.turn_on",
+}
 UI_NODE = "ui:persistent"
 UI_ACTIONS = {"persistent_notification.create", "notify.persistent_notification"}
 # notify actions that are not a target
@@ -40,7 +51,7 @@ COMPUTED_NODE = "notify:computed"
 # messaging actions outside notify.*; the integration is the target node
 MESSAGING_ACTIONS = {"mastodon.post"}
 
-TYPE_ORDER = {"user": 0, "person": 1, "device": 2, "tracker": 3, "notify": 4, "ui": 5, "routine": 6}
+TYPE_ORDER = {"user": 0, "person": 1, "device": 2, "tracker": 3, "notify": 4, "ui": 5, "routine": 6, "access": 7}
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
 
@@ -158,6 +169,29 @@ def sent_keys(domain: str, service: str, data: Any) -> list[str]:
     return []
 
 
+def tag_triggers(config: Any) -> set[str]:
+    """Tag ids of the NFC tag triggers in a config."""
+    found: set[str] = set()
+    stack = [config]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if item.get("trigger", item.get("platform")) == "tag":
+                found.update(t for t in _strings(item.get("tag_id")) if "{{" not in t)
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return found
+
+
+def access_kind(entity: dict[str, Any]) -> str:
+    if entity.get("domain") == "lock":
+        return "lock"
+    if entity.get("domain") == "alarm_control_panel":
+        return "alarm"
+    return entity.get("device_class") or "door"
+
+
 def call_targets(call: dict[str, Any], key: str) -> list[str]:
     found: list[str] = []
     for holder in (call, call.get("target"), call.get("data")):
@@ -181,6 +215,13 @@ class Builder:
         self.services = set(snapshot.get("services", []))
         # companion app sensors and the device they belong to
         self.app_entities: dict[str, str] = snapshot.get("app_entities") or {}
+        # what opens the house, and NFC tags
+        self.access: dict[str, dict] = snapshot.get("access") or {}
+        self.tags: dict[str, dict] = snapshot.get("tags") or {}
+        self.access_by_device: dict[str, list[str]] = {}
+        for entity_id, entity in self.access.items():
+            if entity.get("device_id"):
+                self.access_by_device.setdefault(entity["device_id"], []).append(entity_id)
         # last notification calls seen on the bus, and since when they are recorded
         self.sent: dict[str, str] = snapshot.get("sent") or {}
         self.sent_since: str | None = snapshot.get("sent_since")
@@ -521,6 +562,31 @@ class Builder:
 
     # automations, scripts and alerts
 
+    def access_nodes(self) -> None:
+        for entity_id, entity in self.access.items():
+            info = {
+                "entity_id": entity_id,
+                "state": entity.get("state"),
+                "voice": entity.get("voice"),
+                "device_id": entity.get("device_id"),
+            }
+            self.add(
+                f"access:{entity_id}", "access", entity.get("name") or entity_id, kind=access_kind(entity), info=info
+            )
+            if entity.get("voice"):
+                self.issue("info", "access_voice", f"access:{entity_id}")
+
+    def access_links(self, call: dict[str, Any]) -> tuple[list[tuple[str, str, str | None, bool]], set[str]]:
+        """Links to the access entities a call targets, and those it opens."""
+        action = call.get("action", call.get("service"))
+        if not isinstance(action, str) or "{{" in action:
+            return [], set()
+        targets = {e for e in call_targets(call, "entity_id") if e in self.access}
+        for device_id in call_targets(call, "device_id"):
+            targets.update(self.access_by_device.get(device_id, []))
+        links = [(f"access:{e}", "controls", action, False) for e in sorted(targets)]
+        return links, targets if action in OPENING else set()
+
     def routines(self) -> None:
         found: dict[str, dict] = {}
         tracker_nodes = {
@@ -543,9 +609,13 @@ class Builder:
             links: list[tuple[str, str, str | None, bool]] = []  # target, kind, label, broken
             calls: set[str] = set()
             sent: list[tuple[str, list[str]]] = []  # node reached, buttons of the notification
+            opens: set[str] = set()
             for call in action_calls(routine.get("config")):
                 out = self.call_links(call, calls)
                 links += out
+                controls, opened = self.access_links(call)
+                links += controls
+                opens |= opened
                 actions = buttons(call)
                 if actions:
                     sent += [(target, actions) for target, kind, _l, broken in out if kind == "notifies" and not broken]
@@ -574,6 +644,8 @@ class Builder:
                 "sent": sent,
                 "listens": list(button_listeners(routine.get("config"))),
                 "answers": [],
+                "opens": opens,
+                "tags": tag_triggers(routine.get("config")),
             }
 
         # a button pressed in a notification runs the routines waiting for its action
@@ -620,6 +692,8 @@ class Builder:
                     self.link(rid, f"routine:{called}", "calls", called, off=not r["enabled"] or None)
             for source, label in r["answers"]:
                 self.link(source, rid, "answers", label, off=not r["enabled"] or None)
+        self.routine_opens = {rid: r["opens"] for rid, r in found.items() if rid in relevant and r["enabled"]}
+        self.routine_tags = {rid: r["tags"] for rid, r in found.items() if rid in relevant and r["enabled"]}
 
     def call_links(self, call: dict[str, Any], calls: set[str]) -> list[tuple[str, str, str | None, bool]]:
         action = call.get("action", call.get("service"))
@@ -783,6 +857,108 @@ class Builder:
             if node is not None:
                 node["info"]["dashboards"] = seen
 
+    def access_paths(self) -> None:
+        """Who can open each access entity, and how: dashboard, notification button, tag, presence, voice."""
+        if not self.access:
+            return
+        out_edges: dict[str, list[tuple[str, str]]] = {}
+        in_edges: dict[str, list[tuple[str, str]]] = {}
+        for source, target, kind in self.edges:
+            out_edges.setdefault(source, []).append((target, kind))
+            in_edges.setdefault(target, []).append((source, kind))
+        opens = getattr(self, "routine_opens", {})
+
+        def opened(rid: str, seen: set[str] | None = None) -> set[str]:
+            # a routine opens what it opens itself and what the scripts it runs open
+            seen = seen if seen is not None else set()
+            if rid in seen:
+                return set()
+            seen.add(rid)
+            found = set(opens.get(rid, set()))
+            for target, kind in out_edges.get(rid, []):
+                if kind == "calls":
+                    found |= opened(target, seen)
+            return found
+
+        def name(node_id: str) -> str:
+            return self.nodes[node_id]["name"]
+
+        def add(ways: dict[str, list[dict]], entity_id: str, way: dict) -> None:
+            if way not in ways.setdefault(entity_id, []):
+                ways[entity_id].append(way)
+
+        tag_routines: dict[str, list[str]] = {}
+        for rid, tags in getattr(self, "routine_tags", {}).items():
+            for tag_id in tags:
+                tag_routines.setdefault(tag_id, []).append(rid)
+        voice = [e for e, entity in self.access.items() if entity.get("voice")]
+        who: dict[str, list[dict]] = {}
+        for user in self.users.values():
+            uid = f"user:{user['id']}"
+            if user.get("system_generated") or uid not in self.nodes:
+                continue
+            ways: dict[str, list[dict]] = {}
+            for board in self.snap.get("dashboards") or []:
+                if board.get("require_admin") and not user.get("is_admin"):
+                    continue
+                for view in board.get("views") or []:
+                    if view.get("users") is None or user["id"] in view["users"]:
+                        for entity_id in view.get("access") or []:
+                            add(
+                                ways,
+                                entity_id,
+                                {"kind": "dashboard", "label": board.get("title") or board.get("url_path")},
+                            )
+            persons = [t for t, k in out_edges.get(uid, []) if k == "account"]
+            devices = [t for t, k in out_edges.get(uid, []) if k == "registered"]
+            devices += [
+                t for p in persons for t, k in out_edges.get(p, []) if k == "tracks" and t.startswith("device:")
+            ]
+            reached = set(devices)
+            for device in devices:
+                reached.update(s for s, k in in_edges.get(device, []) if k == "includes")
+            for node_id in sorted(reached):
+                for rid, kind in out_edges.get(node_id, []):
+                    if kind != "answers":
+                        continue
+                    # the phone, or the group that reaches it
+                    for entity_id in opened(rid):
+                        add(ways, entity_id, {"kind": "button", "label": name(rid), "via": name(node_id)})
+            # routines that open on someone's arrival
+            for node_id in persons + devices:
+                for rid, kind in in_edges.get(node_id, []):
+                    if kind == "watches":
+                        for entity_id in opened(rid):
+                            add(ways, entity_id, {"kind": "presence", "label": name(rid)})
+            for tag_id, tag in self.tags.items():
+                if f"device:{tag.get('device_id')}" in devices:
+                    for rid in tag_routines.get(tag_id, []):
+                        for entity_id in opened(rid):
+                            add(ways, entity_id, {"kind": "tag", "label": tag.get("name") or tag_id})
+            for entity_id in voice:
+                add(ways, entity_id, {"kind": "voice"})
+            self.nodes[uid]["info"]["opens"] = [
+                {"id": f"access:{e}", "ways": ways[e]} for e in sorted(ways, key=lambda e: name(f"access:{e}"))
+            ]
+            for entity_id, items in ways.items():
+                who.setdefault(f"access:{entity_id}", []).append({"user": uid, "ways": items})
+        for node_id, items in who.items():
+            self.nodes[node_id]["info"]["who"] = items
+        # a tag that has not been scanned for months and still opens something
+        for tag_id, tag in self.tags.items():
+            age = self.age(tag.get("last_scanned"))
+            if age is None or age < DORMANT_AFTER:
+                continue
+            for rid in tag_routines.get(tag_id, []):
+                for entity_id in opened(rid):
+                    self.issue(
+                        "info",
+                        "access_old_tag",
+                        f"access:{entity_id}",
+                        tag=tag.get("name") or tag_id,
+                        since=tag.get("last_scanned"),
+                    )
+
     def leftovers(self) -> None:
         """App devices nobody follows and nothing notifies."""
         used = {
@@ -850,6 +1026,7 @@ class Builder:
         self.users_and_persons()
         self.user_checks()
         self.mobile_apps()
+        self.access_nodes()
         self.routines()
         for service in sorted(self.notify):
             spec = self.notify[service]
@@ -859,6 +1036,7 @@ class Builder:
         self.dormancy()
         self.deliveries()
         self.dashboards()
+        self.access_paths()
 
         worst: dict[str, int] = {}
         for issue in self.issues:

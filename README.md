@@ -22,12 +22,14 @@ and alerts of your instance, and draws the links between them in columns, from a
 - what a phone can run from a notification button, such as opening the gate from the doorbell
   notification;
 - when each phone was last notified, and by which service;
-- the dashboards each user can open, and the views kept for other users.
+- the dashboards each user can open, and the views kept for other users;
+- what opens the house (locks, alarm panels, gates, garage doors, doors) and who can open each one: from a
+  dashboard, a notification button, an NFC tag, on arrival, or by voice through Assist.
 
 The panel has three views:
 
-- Map: five columns read from left to right, users, people, devices, notifications and automations. On a
-  computer, the map builds itself column by column when the panel opens, and again after a refresh. Click a node to light up what it
+- Map: six columns read from left to right, users, people, devices, notifications, automations and
+  access. On a computer, the map builds itself column by column when the panel opens, and again after a refresh. Click a node to light up what it
   leads to, towards the accounts and towards the automations, and to read its details. From there, or from a card of
   the next view, Isolate keeps only that branch on the map, and Hide takes the node off the map
   with whatever only hangs from it: hiding a child's account removes their person and phones, while a
@@ -79,6 +81,7 @@ integration.
 | presence | `person.*` and tracker entities named in an automation |
 | phone sensor | companion app entities named in an automation (next alarm, battery, Wi-Fi...) |
 | notification button | a notification with `actions` and the automation or script waiting for that action (`mobile_app_notification_action` trigger or `wait_for_trigger`) |
+| access | locks, alarm panels and covers of class gate, garage or door, the automations and scripts that act on them, the dashboard views that show them, NFC tag triggers and Assist exposure |
 
 Templates are read where a target can be told from them (a device id in a default value, for instance).
 A notification whose service is a template (`notify.{{ ... }}`) gets a node of its own, which says that whom it
@@ -94,6 +97,20 @@ To find which integration owns a notification service and what automations, scri
 reads a few structures that are internal to Home Assistant. Each time the map is drawn it checks they are
 still there. If a release has moved one, a banner at the top of the panel lists what the map can no longer
 show, and a warning is logged once.
+
+## Phones card
+
+A dashboard card lists the household's phones, watches and tablets: whose each one is, its last activity
+and its last notification, dormant ones greyed. It loads with the integration: pick Clan in the card
+picker, or write:
+
+```yaml
+type: custom:clan-card
+title: Phones        # optional
+show_dormant: false  # optional, hides dormant devices
+```
+
+It reads what the panel reads, so it only shows to administrators.
 
 ## Languages
 

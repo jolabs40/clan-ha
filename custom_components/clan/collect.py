@@ -19,11 +19,14 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .graph import ENTITY_RE
 
 _LOGGER = logging.getLogger(__name__)
 
 HEX_RE = re.compile(r"\b[0-9a-f]{32}\b")
 ROUTINE_DOMAINS = ("automation", "script", "alert")
+ACCESS_DOMAINS = ("lock", "alarm_control_panel", "cover")
+ACCESS_CLASSES = {"gate", "garage", "door"}
 # notify actions that belong to no integration
 NOTIFY_BUILTIN = {"send_message", "persistent_notification"}
 
@@ -41,7 +44,8 @@ async def async_collect(hass: HomeAssistant) -> dict[str, Any]:
     entities = _entities(hass, ent_reg)
     apps = _apps(hass, dev_reg)
     notify = _notify_services(hass)
-    dashboards = await _dashboards(hass)
+    access = _access(hass, ent_reg)
+    dashboards = await _dashboards(hass, set(access))
     health = _health(hass, notify, apps, routines, dashboards)
 
     wanted = {e["device_id"] for e in entities.values() if e.get("device_id")}
@@ -58,6 +62,8 @@ async def async_collect(hass: HomeAssistant) -> dict[str, Any]:
         "sent": dict(hass.data.get(DOMAIN, {}).get("sent") or {}),
         "sent_since": hass.data.get(DOMAIN, {}).get("since"),
         "dashboards": dashboards or [],
+        "access": access,
+        "tags": _tags(hass),
         "remote": _remote(hass),
         "users": await _users(hass),
         "persons": _persons(hass),
@@ -262,8 +268,53 @@ def _notify_services(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
     return out
 
 
-async def _dashboards(hass: HomeAssistant) -> list[dict[str, Any]] | None:
-    """Dashboards and the users allowed on each view; None when Lovelace keeps them elsewhere."""
+def _access(hass: HomeAssistant, ent_reg: er.EntityRegistry) -> dict[str, dict[str, Any]]:
+    """Locks, alarm panels, gates, garage doors and doors, and whether Assist can operate them."""
+    try:
+        from homeassistant.components.homeassistant.exposed_entities import async_should_expose
+    except ImportError:
+        async_should_expose = None
+    out = {}
+    for state in hass.states.async_all(ACCESS_DOMAINS):
+        device_class = state.attributes.get("device_class")
+        if state.domain == "cover" and device_class not in ACCESS_CLASSES:
+            continue
+        entry = ent_reg.async_get(state.entity_id)
+        voice = None
+        if async_should_expose is not None:
+            try:
+                voice = bool(async_should_expose(hass, "conversation", state.entity_id))
+            except (HomeAssistantError, KeyError, ValueError):
+                voice = None
+        out[state.entity_id] = {
+            "name": state.attributes.get("friendly_name") or state.entity_id,
+            "domain": state.domain,
+            "device_class": device_class,
+            "device_id": entry.device_id if entry else None,
+            "state": state.state,
+            "voice": voice,
+        }
+    return out
+
+
+def _tags(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+    """NFC tags, when they were last scanned and by which device."""
+    out = {}
+    for state in hass.states.async_all("tag"):
+        tag_id = state.attributes.get("tag_id")
+        if not tag_id:
+            continue
+        out[tag_id] = {
+            "name": state.attributes.get("friendly_name"),
+            "last_scanned": state.state if state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE) else None,
+            "device_id": state.attributes.get("last_scanned_by_device_id"),
+        }
+    return out
+
+
+async def _dashboards(hass: HomeAssistant, access: set[str]) -> list[dict[str, Any]] | None:
+    """Dashboards, the users allowed on each view and the access entities it shows; None when
+    Lovelace keeps them elsewhere."""
     data = hass.data.get("lovelace")
     if data is None:
         return []
@@ -291,7 +342,8 @@ async def _dashboards(hass: HomeAssistant) -> list[dict[str, Any]] | None:
                     users = [v["user"] for v in visible if isinstance(v, dict) and v.get("user")]
                 else:
                     users = None if visible is not False else []
-                views.append({"users": users, "subview": bool(view.get("subview"))})
+                shown = set(ENTITY_RE.findall(json.dumps(_plain(view)))) & access
+                views.append({"users": users, "subview": bool(view.get("subview")), "access": sorted(shown)})
         out.append(
             {
                 "url_path": url_path,

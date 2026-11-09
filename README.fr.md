@@ -25,12 +25,14 @@ automatisations :
 - ce qu'un téléphone peut lancer par un bouton de notification, comme ouvrir le portail depuis la
   notification de la sonnette ;
 - quand chaque téléphone a reçu sa dernière notification, et par quel service ;
-- les tableaux de bord que chaque utilisateur peut ouvrir, et les vues réservées à d'autres.
+- les tableaux de bord que chaque utilisateur peut ouvrir, et les vues réservées à d'autres ;
+- ce qui ouvre la maison (serrures, alarmes, portails, portes de garage, portes) et qui peut ouvrir chacun :
+  depuis un tableau de bord, un bouton de notification, un badge NFC, à l'arrivée, ou à la voix par Assist.
 
 Trois vues :
 
-- Carte : cinq colonnes qui se lisent de gauche à droite, utilisateurs, personnes, appareils,
-  notifications et automatisations. Sur un ordinateur, la carte se construit colonne après colonne à
+- Carte : six colonnes qui se lisent de gauche à droite, utilisateurs, personnes, appareils,
+  notifications, automatisations et accès. Sur un ordinateur, la carte se construit colonne après colonne à
   l'ouverture du panneau, et de nouveau après une actualisation. Un clic sur un nœud éclaire ce à quoi il mène, vers les comptes et vers les
   automatisations, et ouvre son détail. De
   là, ou depuis une fiche de la vue suivante, Isoler ne garde que cette branche sur la carte, et
@@ -86,6 +88,7 @@ l'intégration.
 | présence | entités `person.*` et traceurs cités dans une automatisation |
 | capteur de téléphone | entités de l'application compagnon citées dans une automatisation (prochain réveil, batterie, Wi-Fi...) |
 | bouton de notification | une notification avec `actions` et l'automatisation ou le script qui attend cette action (déclencheur `mobile_app_notification_action` ou `wait_for_trigger`) |
+| accès | serrures, alarmes et volets de classe portail, garage ou porte, les automatisations et scripts qui les commandent, les vues de tableau de bord qui les montrent, les déclencheurs de badge NFC et l'exposition à Assist |
 
 Les gabarits sont lus quand on peut en tirer une cible (un identifiant d'appareil dans une valeur par défaut,
 par exemple). Une notification dont le service est un gabarit (`notify.{{ ... }}`) a son propre nœud, qui dit
@@ -102,6 +105,20 @@ Pour savoir à quelle intégration appartient un service de notification et ce q
 scripts et alertes, Clan lit quelques structures internes à Home Assistant. À chaque tracé de la carte, il
 vérifie qu'elles sont toujours là. Si une version en a déplacé une, un bandeau en haut du panneau indique ce
 que la carte ne peut plus montrer, et un avertissement est écrit une fois dans le journal.
+
+## Carte des téléphones
+
+Une carte de tableau de bord liste les téléphones, montres et tablettes de la maison : à qui est chacun,
+sa dernière activité et sa dernière notification, ceux en sommeil grisés. Elle est chargée avec
+l'intégration : choisir Clan parmi les cartes, ou écrire :
+
+```yaml
+type: custom:clan-card
+title: Téléphones    # facultatif
+show_dormant: false  # facultatif, masque les appareils en sommeil
+```
+
+Elle lit ce que lit le panneau : elle ne s'affiche qu'aux administrateurs.
 
 ## Langues
 

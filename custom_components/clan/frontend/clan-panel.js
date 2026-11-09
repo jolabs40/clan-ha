@@ -8,7 +8,7 @@ const { ICONS } = await import(`./clan-icons.js${V}`);
 
 const PREFS_KEY = "clan-prefs";
 const ISSUES = "https://github.com/jolabs40/clan-ha/issues";
-const TYPES = ["user", "person", "device", "tracker", "notify", "ui", "routine"];
+const TYPES = ["user", "person", "device", "tracker", "notify", "ui", "routine", "access"];
 const SEVERITIES = ["error", "warn", "info"];
 const EDGE_TYPES = [
   "account",
@@ -21,6 +21,7 @@ const EDGE_TYPES = [
   "watches",
   "reads",
   "mentions",
+  "controls",
 ];
 
 function loadPrefs() {
@@ -434,7 +435,7 @@ class ClanPanel extends HTMLElement {
     this._renderScope();
     graph.setData(this._data, {
       visible: this._visible(),
-      heads: [T.type_user, T.type_person, T.type_device, T.type_notify, T.type_routine],
+      heads: [T.type_user, T.type_person, T.type_device, T.type_notify, T.type_routine, T.type_access],
     });
     graph.setSpotlight(P.spotlight);
     if (this._query) graph.setQuery(this._query);
@@ -508,10 +509,11 @@ class ClanPanel extends HTMLElement {
   _legendMarkup() {
     const T = this.T;
     if (!this._prefs.legend) return "";
-    const types = ["user", "person", "device", "notify", "routine"]
+    const sample = { routine: "automation", access: "gate" };
+    const types = ["user", "person", "device", "notify", "routine", "access"]
       .map(
         (t) =>
-          `<div class="row"><span class="dot-l">${svgIcon(nodeIcon({ type: t, flags: [], kind: t === "routine" ? "automation" : "phone" }), COLORS[t], 16)}</span>${esc(T[`one_${t}`])}</div>`,
+          `<div class="row"><span class="dot-l">${svgIcon(nodeIcon({ type: t, flags: [], kind: sample[t] || "phone" }), COLORS[t], 16)}</span>${esc(T[`one_${t}`])}</div>`,
       )
       .concat(
         `<div class="row"><span class="dot-l">${svgIcon(ICONS.sleep, "#757575", 16)}</span>${esc(T.flag_dormant)}</div>`,
@@ -647,6 +649,7 @@ class ClanPanel extends HTMLElement {
       const devices = this._neighbors(n.id, "out", "registered").map((e) => e.to);
       rows += this._row(T.devices, this._list(devices.map((d) => this._deviceLine(d))));
       rows += this._row(T.dashboards, this._list(this._dashboards(info.dashboards)));
+      rows += this._row(T.can_open, this._list(this._opens(info.opens)));
       rows += this._row(T.tokens, this._list(this._tokens(info.tokens)));
       const persons = this._neighbors(n.id, "out", "account").map((e) => e.to);
       const tracked = persons.flatMap((p) => this._neighbors(p, "out", "tracks").map((e) => e.to));
@@ -684,7 +687,7 @@ class ClanPanel extends HTMLElement {
         T.last_seen,
         info.silent ? esc(T.since_start) : info.last_seen ? esc(ago(info.last_seen, now, lang, T)) : "",
       );
-      if (info.entity_id) rows += this._row("Entity", `<code>${esc(info.entity_id)}</code>`);
+      if (info.entity_id) rows += this._row(T.entity, `<code>${esc(info.entity_id)}</code>`);
       if (info.state) rows += this._row(T.state, esc(this._state(info.state)));
       rows += this._row(
         T.registered_by,
@@ -724,12 +727,23 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.reaches, this._list(this._neighbors(n.id, "out", "includes").map((e) => this._link(e.to))));
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
       rows += this._row(T.buttons_run, this._list(this._labelled(this._neighbors(n.id, "out", "answers"), "to")));
+    } else if (n.type === "access") {
+      rows += this._row(T.entity, `<code>${esc(info.entity_id)}</code>`);
+      const entity = this._hass.states[info.entity_id];
+      rows += this._row(
+        T.state,
+        esc(entity && this._hass.formatEntityState ? this._hass.formatEntityState(entity) : info.state),
+      );
+      rows += this._row(T.who_opens, this._list((info.who || []).map((w) => this._way(w.user, w.ways))));
+      rows += this._row(T.controlled_by, this._list(this._labelled(this._neighbors(n.id, "in", "controls"), "from")));
+      if (info.voice) rows += this._row(T.voice_assist, esc(T.voice_exposed));
+      if (info.device_id) links.push([`/config/devices/device/${info.device_id}`, T.open_device]);
     } else if (n.type === "ui") {
       rows += `<dd style="margin-top:12px">${esc(T.ui_text)}</dd>`;
       rows += this._row(T.last_notification, this._lastNotification(n));
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
     } else if (n.type === "routine") {
-      rows += this._row("Entity", `<code>${esc(info.entity_id)}</code>`);
+      rows += this._row(T.entity, `<code>${esc(info.entity_id)}</code>`);
       if (info.kind === "automation") rows += this._row(T.enabled, esc(info.enabled ? T.yes : T.no));
       rows += this._row(T.last_triggered, info.kind !== "alert" ? esc(ago(info.last_triggered, now, lang, T)) : "");
       const targets = this._neighbors(n.id, "out", "notifies").map(
@@ -774,6 +788,21 @@ class ClanPanel extends HTMLElement {
       for (const inc of this._neighbors(id, "in", "includes")) add(this._neighbors(inc.from, "out", "answers"));
     }
     return this._labelled([...found.values()], "to");
+  }
+
+  // what an account can open, and how
+  _opens(opens) {
+    return (opens || []).map((o) => this._way(o.id, o.ways));
+  }
+
+  _way(id, ways) {
+    const T = this.T;
+    const text = (ways || []).map((w) =>
+      w.kind === "voice"
+        ? T.way_voice
+        : fill(T[`way_${w.kind}`] || w.kind, { label: w.label || T.default_dashboard, via: w.via || "" }),
+    );
+    return `${this._link(id)}<div class="sub">${esc(text.join(" · "))}</div>`;
   }
 
   // dashboards an account can open, with the views it sees when some are kept for others
@@ -851,7 +880,8 @@ class ClanPanel extends HTMLElement {
     const T = this.T;
     const { rows, links } = this._details(n);
     const color = n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type];
-    const kind = n.type === "routine" ? T[`kind_${n.kind}`] || T.one_routine : T[`one_${n.type}`];
+    const kind =
+      n.type === "routine" || n.type === "access" ? T[`kind_${n.kind}`] || T[`one_${n.type}`] : T[`one_${n.type}`];
     drawer.innerHTML = `
       <header>${svgIcon(nodeIcon(n), color, 36)}
         <div class="name"><b>${esc(n.name)}</b><small>${esc(kind)}</small></div>
@@ -946,6 +976,7 @@ class ClanPanel extends HTMLElement {
     }
     const sensors = devices.flatMap((d) => this._neighbors(d, "in", "reads"));
     rows += this._row(T.sensors_used_by, this._list(this._labelled(sensors, "from")));
+    rows += this._row(T.can_open, this._list(this._opens(u.info?.opens)));
     rows += this._row(T.dashboards, this._list(this._dashboards(u.info?.dashboards)));
     rows += this._row(T.tokens, this._list(this._tokens(u.info?.tokens)));
     const issues = [u.id, person?.id, ...devices]
