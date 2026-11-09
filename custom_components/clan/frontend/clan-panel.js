@@ -646,6 +646,7 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.person, this._list(this._neighbors(n.id, "out", "account").map((e) => this._link(e.to))));
       const devices = this._neighbors(n.id, "out", "registered").map((e) => e.to);
       rows += this._row(T.devices, this._list(devices.map((d) => this._deviceLine(d))));
+      rows += this._row(T.dashboards, this._list(this._dashboards(info.dashboards)));
       rows += this._row(T.tokens, this._list(this._tokens(info.tokens)));
       const persons = this._neighbors(n.id, "out", "account").map((e) => e.to);
       const tracked = persons.flatMap((p) => this._neighbors(p, "out", "tracks").map((e) => e.to));
@@ -701,6 +702,7 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.trackers, (info.trackers || []).map((t) => `<code>${esc(t)}</code>`).join(" "));
       rows += this._row(T.services, (info.services || []).map((s) => `<code>${esc(s)}</code>`).join(" "));
       rows += this._row(T.notify_entities, (info.notify || []).map((s) => `<code>${esc(s)}</code>`).join(" "));
+      rows += this._row(T.last_notification, this._lastNotification(n));
       rows += this._row(T.notified_by, this._list(this._notifiers([n.id])));
       rows += this._row(T.buttons_run, this._list(this._buttons([n.id])));
       rows += this._row(
@@ -718,11 +720,13 @@ class ClanPanel extends HTMLElement {
       rows += this._row(T.service, `<code>${esc(info.service || info.entity_id || n.name)}</code>`);
       rows += this._row(T.platform, esc(info.platform || ""));
       rows += this._row(T.one_notify, esc(T[`kind_${n.kind}`] || ""));
+      rows += this._row(T.last_notification, this._lastNotification(n));
       rows += this._row(T.reaches, this._list(this._neighbors(n.id, "out", "includes").map((e) => this._link(e.to))));
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
       rows += this._row(T.buttons_run, this._list(this._labelled(this._neighbors(n.id, "out", "answers"), "to")));
     } else if (n.type === "ui") {
       rows += `<dd style="margin-top:12px">${esc(T.ui_text)}</dd>`;
+      rows += this._row(T.last_notification, this._lastNotification(n));
       rows += this._row(T.used_by, this._list(this._neighbors(n.id, "in", "notifies").map((e) => this._link(e.from))));
     } else if (n.type === "routine") {
       rows += this._row("Entity", `<code>${esc(info.entity_id)}</code>`);
@@ -772,6 +776,33 @@ class ClanPanel extends HTMLElement {
     return this._labelled([...found.values()], "to");
   }
 
+  // dashboards an account can open, with the views it sees when some are kept for others
+  _dashboards(boards) {
+    const T = this.T;
+    return (boards || []).map((b) => {
+      const notes = [];
+      if (b.views !== null && b.views !== undefined && b.views < b.of) {
+        notes.push(fill(b.views === 1 ? T.view_of : T.views_of, { views: b.views, of: b.of }));
+      }
+      if (b.admin) notes.push(T.admins_only);
+      if (!b.sidebar) notes.push(T.not_in_sidebar);
+      const title = b.title || (b.url_path ? b.url_path : T.default_dashboard);
+      const note = notes.length ? ` <span class="sub">${esc(notes.join(" · "))}</span>` : "";
+      return `<a class="go" data-go="/${esc(b.url_path || "lovelace")}">${esc(title)}</a>${note}`;
+    });
+  }
+
+  // time and service of the last notification, or since when none was seen
+  _lastNotification(n) {
+    const T = this.T;
+    const last = n.info?.notified;
+    if (last) return `${esc(ago(last.at, this._now, T.lang, T))} <code>${esc(last.via)}</code>`;
+    const since = this._data.sent_since;
+    if (!since) return "";
+    const date = new Date(since).toLocaleDateString(T.lang, { day: "numeric", month: "short" });
+    return `<span class="sub">${esc(fill(T.none_since, { date }))}</span>`;
+  }
+
   // HA records a long-lived token's creation, not its use
   _tokens(tokens) {
     const T = this.T;
@@ -788,6 +819,7 @@ class ClanPanel extends HTMLElement {
     const app = n.info?.app;
     const bits = [app?.os, app?.version ? `${T.app_version} ${app.version.split(" ")[0]}` : null].filter(Boolean);
     const seen = n.info?.silent ? T.since_start : n.info?.last_seen ? ago(n.info.last_seen, this._now, T.lang, T) : "";
+    if (n.info?.notified) bits.push(fill(T.notified_ago, { ago: ago(n.info.notified.at, this._now, T.lang, T) }));
     const warn =
       n.status !== "ok"
         ? ` <ha-icon icon="mdi:alert" style="--mdc-icon-size:14px;color:var(--${n.status === "error" ? "error" : "warning"}-color)"></ha-icon>`
@@ -914,6 +946,7 @@ class ClanPanel extends HTMLElement {
     }
     const sensors = devices.flatMap((d) => this._neighbors(d, "in", "reads"));
     rows += this._row(T.sensors_used_by, this._list(this._labelled(sensors, "from")));
+    rows += this._row(T.dashboards, this._list(this._dashboards(u.info?.dashboards)));
     rows += this._row(T.tokens, this._list(this._tokens(u.info?.tokens)));
     const issues = [u.id, person?.id, ...devices]
       .filter(Boolean)

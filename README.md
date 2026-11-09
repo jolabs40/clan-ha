@@ -20,7 +20,9 @@ and alerts of your instance, and draws the links between them in columns, from a
   a notification group, or through `notify.notify`, which reaches every phone;
 - the automations that use someone's presence, or a sensor of a phone (next alarm, charging, Wi-Fi);
 - what a phone can run from a notification button, such as opening the gate from the doorbell
-  notification.
+  notification;
+- when each phone was last notified, and by which service;
+- the dashboards each user can open, and the views kept for other users.
 
 The panel has three views:
 
@@ -34,8 +36,8 @@ The panel has three views:
   Dormant items are greyed with a dotted ring: a silent phone whose app has not been updated for three
   months, an account with no sign-in for three months, and what only reaches them (a person followed only
   by old phones, an automation that only notifies them). The Dormant button highlights them.
-- By person: one card per user with their person, trackers, devices, the automations that notify them
-  and their tokens.
+- By person: one card per user with their person, trackers, devices, the automations that notify them,
+  their dashboards and their tokens.
 - Findings: what deserves a look, such as an automation calling a notification service that no longer
   exists, a phone registered several times, an app silent since Home Assistant started, a phone probably
   abandoned, an account never used, a group member that is gone, or a person nobody can sign in as.
@@ -81,6 +83,10 @@ integration.
 Templates are read where a target can be told from them (a device id in a default value, for instance).
 A notification whose service is a template (`notify.{{ ... }}`) gets a node of its own, which says that whom it
 reaches is only known when it runs.
+
+The last notification of a phone comes from the notification calls Clan sees once installed, kept across
+restarts, and from the state of its notify entity. Before that, the panel says since when it is watching.
+A view restricted to some users hides it from the others in the interface only: it is not a permission.
 
 ## When Home Assistant changes
 

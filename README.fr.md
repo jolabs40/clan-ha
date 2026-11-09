@@ -23,7 +23,9 @@ automatisations :
 - les automatisations qui se servent de la présence de quelqu'un, ou d'un capteur d'un téléphone (prochain
   réveil, charge, Wi-Fi) ;
 - ce qu'un téléphone peut lancer par un bouton de notification, comme ouvrir le portail depuis la
-  notification de la sonnette.
+  notification de la sonnette ;
+- quand chaque téléphone a reçu sa dernière notification, et par quel service ;
+- les tableaux de bord que chaque utilisateur peut ouvrir, et les vues réservées à d'autres.
 
 Trois vues :
 
@@ -41,7 +43,7 @@ Trois vues :
   personne suivie seulement par de vieux téléphones, une automatisation qui ne notifie qu'eux). Le bouton
   En sommeil les met en évidence.
 - Par personne : une fiche par utilisateur, avec sa personne, ses traceurs, ses appareils, les
-  automatisations qui le notifient et ses jetons.
+  automatisations qui le notifient, ses tableaux de bord et ses jetons.
 - Constats : ce qui mérite un coup d'œil, comme une automatisation qui appelle un service de notification
   disparu, un téléphone enregistré plusieurs fois, une appli muette depuis le démarrage, un téléphone
   probablement abandonné, un compte jamais utilisé, un membre de groupe disparu ou une personne sans compte.
@@ -88,6 +90,11 @@ l'intégration.
 Les gabarits sont lus quand on peut en tirer une cible (un identifiant d'appareil dans une valeur par défaut,
 par exemple). Une notification dont le service est un gabarit (`notify.{{ ... }}`) a son propre nœud, qui dit
 qu'on ne sait qui elle atteint qu'au moment de l'envoi.
+
+La dernière notification d'un téléphone vient des appels de notification que Clan voit passer une fois
+installé, gardés d'un redémarrage à l'autre, et de l'état de son entité de notification. Avant, le panneau
+dit depuis quand il observe. Une vue réservée à certains utilisateurs ne fait que la cacher aux autres dans
+l'interface : ce n'est pas une permission.
 
 ## Quand Home Assistant change
 

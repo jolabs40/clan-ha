@@ -31,7 +31,7 @@ async def ws_graph(hass: HomeAssistant, connection: websocket_api.ActiveConnecti
     data = hass.data[DOMAIN]
     if memory != data["memory"]:
         data["memory"] = memory
-        data["store"].async_delay_save(lambda: data["memory"], 10)
+        data["save"]()
     connection.send_result(msg["id"], result)
 
 

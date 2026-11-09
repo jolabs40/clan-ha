@@ -9,7 +9,8 @@ from pathlib import Path
 from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.const import EVENT_CALL_SERVICE
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -18,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from . import websocket
 from .const import DOMAIN, PANEL_ELEMENT, PANEL_URL, STATIC_URL
+from .graph import sent_keys
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -47,10 +49,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     started = await hass.async_add_executor_job(_process_start)
     if started is None and hass.state is not CoreState.running:
         started = dt_util.utcnow()
-    # last real report and start of silence of each device, kept across restarts
+    # last real report and start of silence of each device, last notification calls, kept across restarts
     store: Store[dict] = Store(hass, 1, f"{DOMAIN}.memory")
     memory = await store.async_load() or {}
-    hass.data[DOMAIN] = {"started": started, "static": False, "store": store, "memory": memory}
+    sent = memory.pop("sent", None) or {}
+    since = memory.pop("since", None)
+    data = {"started": started, "static": False, "store": store, "memory": memory, "sent": sent, "since": since}
+
+    @callback
+    def save() -> None:
+        store.async_delay_save(lambda: {**data["memory"], "sent": data["sent"], "since": data["since"]}, 30)
+
+    @callback
+    def notified(event: Event) -> None:
+        keys = sent_keys(event.data.get("domain", ""), event.data.get("service", ""), event.data.get("service_data"))
+        if not keys:
+            return
+        now = dt_util.utcnow().isoformat()
+        for key in keys:
+            data["sent"][key] = now
+        save()
+
+    data["save"] = save
+    if since is None:
+        data["since"] = dt_util.utcnow().isoformat()
+        save()
+    hass.data[DOMAIN] = data
+    hass.bus.async_listen(EVENT_CALL_SERVICE, notified)
     websocket.async_register(hass)
     return True
 
@@ -86,5 +111,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Delete the stored device memory with the integration."""
     data = hass.data.get(DOMAIN) or {}
     data["memory"] = {}
+    data["sent"] = {}
     store = data.get("store") or Store(hass, 1, f"{DOMAIN}.memory")
     await store.async_remove()

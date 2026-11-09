@@ -20,6 +20,8 @@ DORMANT_AFTER = timedelta(days=90)
 DATED_FROM = datetime(2024, 11, 6, tzinfo=UTC)
 
 SILENT = {"unknown", "unavailable"}
+# seconds within which two records of a notification are the same message
+SAME = 2
 ACTION_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 PERSON_RE = re.compile(r"\bperson\.[a-z0-9_]+")
 TRACKER_RE = re.compile(r"\bdevice_tracker\.[a-z0-9_]+")
@@ -136,6 +138,26 @@ def answers(listened: str | None, sent: list[str], same: bool) -> bool:
     return listened in sent or (same and any("{{" in a for a in sent))
 
 
+def sent_keys(domain: str, service: str, data: Any) -> list[str]:
+    """Memory keys of a notification call, as fired on the bus; empty for any other call."""
+    data = data if isinstance(data, dict) else {}
+    action = f"{domain}.{service}"
+    if domain == "notify" and service == "send_message":
+        return [f"entity:{e}" for e in _strings(data.get("entity_id")) if "{{" not in e]
+    if (
+        domain == "notify"
+        or action in UI_ACTIONS
+        or action in MESSAGING_ACTIONS
+        or service == "send_message"
+        or (domain == "telegram_bot" and service.startswith("send_"))
+    ):
+        return [f"service:{action}"]
+    if "notify" in service:
+        devices = [d for d in _strings(data.get("device_id")) if "{{" not in d]
+        return [f"device:{d}:{action}" for d in devices] or [f"service:{action}"]
+    return []
+
+
 def call_targets(call: dict[str, Any], key: str) -> list[str]:
     found: list[str] = []
     for holder in (call, call.get("target"), call.get("data")):
@@ -159,6 +181,9 @@ class Builder:
         self.services = set(snapshot.get("services", []))
         # companion app sensors and the device they belong to
         self.app_entities: dict[str, str] = snapshot.get("app_entities") or {}
+        # last notification calls seen on the bus, and since when they are recorded
+        self.sent: dict[str, str] = snapshot.get("sent") or {}
+        self.sent_since: str | None = snapshot.get("sent_since")
         # device memory from earlier runs: {"seen": {device: time}, "quiet": {device: time}}
         memory = snapshot.get("memory") or {}
         self.memory = {key: dict(memory.get(key) or {}) for key in ("seen", "quiet")}
@@ -667,6 +692,97 @@ class Builder:
             flags.append("missing")
         return node_id
 
+    def sent_node(self, key: str) -> tuple[str | None, str]:
+        """Node and label of a memory key from sent_keys."""
+        kind, _, rest = key.partition(":")
+        if kind == "entity":
+            entity = self.entities.get(rest) or {}
+            if entity.get("device_id") in self.devices:
+                return f"device:{entity['device_id']}", rest
+            return (f"notify:{rest}" if entity.get("members") else f"entity:{rest}"), rest
+        if kind == "device":
+            device_id, _, action = rest.partition(":")
+            return f"device:{device_id}", action
+        domain, _, service = rest.partition(".")
+        if rest in UI_ACTIONS:
+            return UI_NODE, rest
+        if domain == "notify":
+            spec = self.notify.get(service) or {}
+            app = self.apps.get(spec.get("entry_id")) if spec.get("kind") == "app" else None
+            if app and app.get("device_id"):
+                return f"device:{app['device_id']}", rest
+            return f"notify:{rest}", rest
+        if (domain == "telegram_bot" and service.startswith("send_")) or service == "send_message":
+            return f"notify:{domain}", rest
+        if rest in MESSAGING_ACTIONS:
+            return f"notify:{domain}", rest
+        return f"notify:{rest}", rest
+
+    def deliveries(self) -> None:
+        """Last notification of each node, a device getting those of the groups that reach it."""
+        last: dict[str, tuple[str, str]] = {}
+
+        def note(node_id: str | None, when: str | None, label: str, slack: float = 0) -> bool:
+            try:
+                moment = _time(when) if when else None
+            except ValueError:
+                # a notify entity that never sent has no time as its state
+                return False
+            if node_id not in self.nodes or moment is None:
+                return False
+            if node_id in last and (moment - _time(last[node_id][0])).total_seconds() <= slack:
+                return False
+            last[node_id] = (moment.isoformat(), label)
+            return True
+
+        includes = [(source, target) for (source, target, kind) in self.edges if kind == "includes"]
+
+        def spread() -> None:
+            for _ in range(4):
+                if not any(note(target, *last[source], SAME) for source, target in includes if source in last):
+                    break
+
+        for key, when in self.sent.items():
+            node_id, label = self.sent_node(key)
+            note(node_id, when, label)
+        spread()
+        # the state of a notify entity is the time of its last message; the call that set it names it better
+        for entity_id, entity in self.entities.items():
+            if entity_id.startswith("notify.") and entity.get("state") not in (None, *SILENT):
+                note(self.sent_node(f"entity:{entity_id}")[0], entity["state"], entity_id, SAME)
+        spread()
+        for node_id, (when, label) in last.items():
+            self.nodes[node_id]["info"]["notified"] = {"at": when, "via": label}
+
+    def dashboards(self) -> None:
+        """Dashboards each account can open, with the share of views it sees."""
+        boards = self.snap.get("dashboards") or []
+        for user in self.users.values():
+            if user.get("system_generated"):
+                continue
+            seen = []
+            for board in boards:
+                if board.get("require_admin") and not user.get("is_admin"):
+                    continue
+                views = board.get("views")
+                main = [v for v in views or [] if not v.get("subview")]
+                shown = sum(1 for v in main if v.get("users") is None or user["id"] in v["users"])
+                if views is not None and main and not shown:
+                    continue
+                seen.append(
+                    {
+                        "url_path": board.get("url_path"),
+                        "title": board.get("title"),
+                        "admin": bool(board.get("require_admin")),
+                        "sidebar": board.get("sidebar", True),
+                        "views": shown if views is not None else None,
+                        "of": len(main) if views is not None else None,
+                    }
+                )
+            node = self.nodes.get(f"user:{user['id']}")
+            if node is not None:
+                node["info"]["dashboards"] = seen
+
     def leftovers(self) -> None:
         """App devices nobody follows and nothing notifies."""
         used = {
@@ -741,6 +857,8 @@ class Builder:
                 self.notify_target(service)
         self.leftovers()
         self.dormancy()
+        self.deliveries()
+        self.dashboards()
 
         worst: dict[str, int] = {}
         for issue in self.issues:
@@ -764,6 +882,7 @@ class Builder:
             "started": self.snap.get("started"),
             "version": self.snap.get("version"),
             "health": self.snap.get("health") or [],
+            "sent_since": self.sent_since,
             "memory": self.memory,
         }
 
