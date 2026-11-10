@@ -83,6 +83,7 @@ const STYLES = `
   .chip.plain { padding-left: 10px; }
   .chip ha-icon { --mdc-icon-size: 16px; }
   .chip.plain.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
+  .chip.plain.on .sub { color: inherit; opacity: .8; }
   .sep { flex: 1 1 auto; }
   .search { display: flex; align-items: center; gap: 4px; border: 1px solid var(--divider-color); border-radius: 16px; padding: 0 8px; }
   .search input { border: none; background: none; color: inherit; font: inherit; font-size: 13px; width: 130px; padding: 5px 0; outline: none; }
@@ -395,27 +396,53 @@ class ClanPanel extends HTMLElement {
     return { focus, masked, show, hide: hiding(both(masked), this._rank, this._links) };
   }
 
+  // Nodes per type, without the system accounts and disabled automations left out of the map
+  _counts() {
+    const { system, disabled } = this._prefs;
+    const counts = {};
+    for (const n of this._data.nodes) {
+      if (!system && n.type === "user" && n.flags.includes("system")) continue;
+      if (!disabled && n.type === "routine" && n.flags.includes("disabled")) continue;
+      counts[n.type] = (counts[n.type] || 0) + 1;
+    }
+    return counts;
+  }
+
+  _refreshCounts() {
+    const counts = this._counts();
+    for (const el of this.shadowRoot.querySelectorAll("[data-count]")) el.textContent = counts[el.dataset.count] || 0;
+  }
+
   _renderMap() {
     const T = this.T;
     const P = this._prefs;
     const stats = this._data.stats || {};
+    const counts = this._counts();
     const chips = TYPES.filter((t) => stats[t])
       .map(
         (t) =>
           `<button class="chip ${P.hidden.includes(t) ? "off" : ""}" data-type="${t}"><span class="dot" style="background:${COLORS[t]}"></span>${esc(
             T[`type_${t}`],
-          )} <span class="sub">${stats[t]}</span></button>`,
+          )} <span class="sub" data-count="${t}">${counts[t] || 0}</span></button>`,
       )
       .join("");
-    const hasSystem = this._data.nodes.some((n) => n.type === "user" && n.flags.includes("system"));
-    const hasDisabled = this._data.nodes.some((n) => n.type === "routine" && n.flags.includes("disabled"));
+    const systemCount = this._data.nodes.filter((n) => n.type === "user" && n.flags.includes("system")).length;
+    const disabledCount = this._data.nodes.filter((n) => n.type === "routine" && n.flags.includes("disabled")).length;
     const asleep = this._data.nodes.filter((n) => n.flags.includes("dormant")).length;
     const pane = this.shadowRoot.querySelector("[data-pane]");
     pane.innerHTML = `
       <div class="bar">
         ${chips}
-        ${hasSystem ? `<button class="chip plain ${P.system ? "on" : ""}" data-toggle="system">${esc(T.show_system)}</button>` : ""}
-        ${hasDisabled ? `<button class="chip plain ${P.disabled ? "on" : ""}" data-toggle="disabled">${esc(T.show_disabled)}</button>` : ""}
+        ${
+          systemCount
+            ? `<button class="chip plain ${P.system ? "on" : ""}" data-toggle="system">${esc(T.show_system)} <span class="sub">${systemCount}</span></button>`
+            : ""
+        }
+        ${
+          disabledCount
+            ? `<button class="chip plain ${P.disabled ? "on" : ""}" data-toggle="disabled">${esc(T.show_disabled)} <span class="sub">${disabledCount}</span></button>`
+            : ""
+        }
         ${
           asleep
             ? `<button class="chip plain ${P.spotlight ? "on" : ""}" data-spotlight title="${esc(T.show_dormant_title)}"><ha-icon icon="mdi:sleep"></ha-icon>${esc(
@@ -1111,6 +1138,7 @@ class ClanPanel extends HTMLElement {
       P[d.toggle] = !P[d.toggle];
       this._save();
       target.classList.toggle("on");
+      this._refreshCounts();
       this._graph?.setVisible(this._visible());
       this._graph?.fit();
     } else if (target.hasAttribute("data-spotlight")) {
