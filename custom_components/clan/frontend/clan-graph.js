@@ -50,6 +50,46 @@ const PLAY_POP = 260;
 const PLAY_MAX = 400;
 // smallest zoom of the first view on a phone
 const PHONE_ZOOM = 0.75;
+// extra space between two integrations in the notification column
+const FAMILY_GAP = 14;
+// notification kinds drawn with their own icon rather than their integration's
+const OWN_ICON = new Set(["app_all", "group", "missing", "computed"]);
+
+// icon of each integration, as an object URL, filled by the panel before it draws
+export const BRANDS = new Map();
+
+// integration whose icon a node shows, or null
+export function brandOf(node) {
+  if (node.type !== "notify" || OWN_ICON.has(node.kind) || (node.flags || []).includes("missing")) return null;
+  return node.info?.platform || null;
+}
+
+export function brandUrl(node) {
+  const domain = brandOf(node);
+  return (domain && BRANDS.get(domain)) || null;
+}
+
+// key that keeps the notification services of one integration together in their column
+function family(n) {
+  return n.type === "notify" ? n.info?.platform || n.kind || "" : n.type;
+}
+
+// gathers each integration's nodes where they sit on average, keeping their order within it
+function together(col) {
+  const at = new Map(col.map((n, i) => [n.id, i]));
+  const sums = new Map();
+  for (const n of col) {
+    const s = sums.get(family(n)) || [0, 0];
+    s[0] += at.get(n.id);
+    s[1] += 1;
+    sums.set(family(n), s);
+  }
+  const mean = (n) => {
+    const [total, count] = sums.get(family(n));
+    return total / count;
+  };
+  col.sort((a, b) => mean(a) - mean(b) || family(a).localeCompare(family(b)) || at.get(a.id) - at.get(b.id));
+}
 
 export function nodeIcon(node) {
   switch (node.type) {
@@ -224,7 +264,8 @@ const STYLES = `
   .node.dormant .body, .node.dormant image { filter: grayscale(1); opacity: .5; }
   .node.dormant .label { fill: var(--secondary-text-color, #727272); font-style: italic; }
   .node.sel .ring { stroke: var(--primary-color, #03a9f4); stroke-width: 4; }
-  .node.off .body, .node.off .icon { opacity: .45; }
+  .node.off .body, .node.off .icon, .node.off image { opacity: .45; }
+  .node .body.brand { fill: var(--card-background-color, #fff); stroke-width: 2.5; }
   .node.missing .body { stroke: var(--error-color, #db4437); stroke-width: 2; stroke-dasharray: 3 3; fill-opacity: .25; }
   .node .icon { fill: #fff; pointer-events: none; }
   .node.missing .icon { fill: var(--error-color, #db4437); }
@@ -387,6 +428,7 @@ export class ClanGraph extends HTMLElement {
       };
       const keys = new Map(col.map((n) => [n.id, center(n)]));
       col.sort((a, b) => keys.get(a.id) - keys.get(b.id));
+      if (col === cols[RANK.notify]) together(col);
     };
     // crossings between each pair of columns
     const spans = this._edges
@@ -433,6 +475,8 @@ export class ClanGraph extends HTMLElement {
     best.cols.forEach((col, r) => {
       cols[r] = col;
     });
+    // the first order, by name, may have been the best
+    together(cols[RANK.notify]);
     index();
     // y: mean of the linked nodes on the left, without overlap
     const gaps = [64, 64, 56, 56, 36, 56];
@@ -446,9 +490,10 @@ export class ClanGraph extends HTMLElement {
     const settle = (col, gap, wish) => {
       const wanted = col.map((n) => wish.get(n.id)).filter(Number.isFinite);
       let last = (wanted.length ? Math.min(...wanted) : -((col.length - 1) / 2) * gap) - gap;
-      const ys = col.map((n) => {
+      const ys = col.map((n, i) => {
         const want = wish.get(n.id);
-        last = Math.max(Number.isFinite(want) ? want : last + gap, last + gap);
+        const step = gap + (i > 0 && n.rank === RANK.notify && family(n) !== family(col[i - 1]) ? FAMILY_GAP : 0);
+        last = Math.max(Number.isFinite(want) ? want : last + step, last + step);
         return last;
       });
       const offsets = col.map((n, i) => ys[i] - wish.get(n.id)).filter(Number.isFinite);
@@ -473,6 +518,7 @@ export class ClanGraph extends HTMLElement {
       if (!col.some((n) => !near(n, true).length)) continue;
       const wish = new Map(col.map((n) => [n.id, near(n, true).length ? n.y : mean(near(n, false))]));
       col.sort((a, b) => (wish.get(a.id) ?? 0) - (wish.get(b.id) ?? 0));
+      if (r === RANK.notify) together(col);
       settle(col, gaps[r], wish);
     }
     const top = Math.min(...this._nodes.map((n) => n.y));
@@ -536,11 +582,17 @@ export class ClanGraph extends HTMLElement {
       flags.includes("dormant") ? "dormant" : "",
     ].join(" ");
     const picture = n.type === "person" && n.info?.picture;
+    const brand = brandUrl(n);
     const clip = `clip-${hash(n.id).toString(36).slice(2)}`;
+    // an integration's icon sits on the card colour, inside a ring of the node's colour
+    const half = n.r * 0.62;
     const body = picture
       ? `<clipPath id="${clip}"><circle r="${n.r}"/></clipPath><circle class="body" r="${n.r}" fill="${COLORS.person}"/>
          <image href="${esc(picture)}" x="${-n.r}" y="${-n.r}" width="${2 * n.r}" height="${2 * n.r}" clip-path="url(#${clip})" preserveAspectRatio="xMidYMid slice"/>`
-      : `<circle class="body" r="${n.r}" fill="${COLORS[n.type] || "#888"}"/>
+      : brand
+        ? `<circle class="body brand" r="${n.r}" stroke="${COLORS[n.type]}"/>
+         <image href="${esc(brand)}" x="${-half}" y="${-half}" width="${2 * half}" height="${2 * half}" preserveAspectRatio="xMidYMid meet"/>`
+        : `<circle class="body" r="${n.r}" fill="${COLORS[n.type] || "#888"}"/>
          <path class="icon" d="${nodeIcon(n)}" transform="translate(${-12 * scale},${-12 * scale}) scale(${scale})"/>`;
     let badge = "";
     if (n.type === "user" && (flags.includes("admin") || flags.includes("owner")) && !flags.includes("system")) {

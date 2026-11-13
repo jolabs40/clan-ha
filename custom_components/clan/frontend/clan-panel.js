@@ -3,7 +3,9 @@
 
 const V = new URL(import.meta.url).search;
 const { texts, esc, ago, fill, issueText } = await import(`./clan-texts.js${V}`);
-const { COLORS, EDGE_COLORS, EDGE_DASH, RANK, nodeIcon, branch, hiding } = await import(`./clan-graph.js${V}`);
+const { COLORS, EDGE_COLORS, EDGE_DASH, RANK, BRANDS, nodeIcon, brandOf, brandUrl, branch, hiding } = await import(
+  `./clan-graph.js${V}`
+);
 const { ICONS } = await import(`./clan-icons.js${V}`);
 
 const PREFS_KEY = "clan-prefs";
@@ -47,6 +49,13 @@ function push(map, key, value) {
 
 function svgIcon(path, color, size = 18) {
   return `<svg class="ni" viewBox="0 0 24 24" width="${size}" height="${size}"><circle cx="12" cy="12" r="12" fill="${color}"/><path d="${path}" fill="#fff" transform="translate(4.8,4.8) scale(.6)"/></svg>`;
+}
+
+// a node's icon: its integration's when one is loaded, as on the map
+function nodeSvg(n, color, size = 18) {
+  const brand = brandUrl(n);
+  if (!brand) return svgIcon(nodeIcon(n), color, size);
+  return `<svg class="ni" viewBox="0 0 24 24" width="${size}" height="${size}"><circle cx="12" cy="12" r="11" fill="var(--card-background-color, #fff)" stroke="${color}" stroke-width="2"/><image href="${esc(brand)}" x="5" y="5" width="14" height="14" preserveAspectRatio="xMidYMid meet"/></svg>`;
 }
 
 const STYLES = `
@@ -283,6 +292,7 @@ class ClanPanel extends HTMLElement {
     button?.classList.add("spin");
     try {
       const data = await this._hass.callWS({ type: "clan/graph" });
+      await this._loadBrands(data);
       this._setData(data);
     } catch (err) {
       const unauthorized = err?.code === "unauthorized";
@@ -295,6 +305,40 @@ class ClanPanel extends HTMLElement {
       // a refresh from another tab does not replay the map later
       this._replay = false;
     }
+  }
+
+  // Icons of the integrations behind the notification services, kept as object URLs for the page.
+  // Home Assistant serves them itself since its brands integration, with a token that changes every
+  // 30 minutes; older versions leave them to the brands CDN. Without an icon the generic one stays.
+  async _loadBrands(data) {
+    const dark = !!this._hass.themes?.darkMode;
+    if (dark !== this._brandsDark) {
+      for (const url of BRANDS.values()) if (url) URL.revokeObjectURL(url);
+      BRANDS.clear();
+      this._brandsDark = dark;
+    }
+    const domains = [...new Set(data.nodes.map(brandOf))].filter((d) => d && !BRANDS.has(d));
+    if (!domains.length) return;
+    const image = dark ? "dark_icon.png" : "icon.png";
+    let url;
+    try {
+      const { token } = await this._hass.callWS({ type: "brands/access_token" });
+      url = (d) => `/api/brands/integration/${d}/${image}?token=${encodeURIComponent(token)}&placeholder=no`;
+    } catch (_e) {
+      url = (d) => `https://brands.home-assistant.io/${d}/${image}`;
+    }
+    const wait = typeof AbortSignal.timeout === "function" ? { signal: AbortSignal.timeout(4000) } : {};
+    await Promise.all(
+      domains.map(async (d) => {
+        try {
+          const response = await fetch(url(encodeURIComponent(d)), wait);
+          const type = response.headers.get("content-type") || "";
+          BRANDS.set(d, response.ok && type.startsWith("image/") ? URL.createObjectURL(await response.blob()) : null);
+        } catch (_e) {
+          // unreachable for now: tried again at the next load
+        }
+      }),
+    );
   }
 
   _setData(data) {
@@ -501,7 +545,7 @@ class ClanPanel extends HTMLElement {
     const chip = (id, attr, title) => {
       const n = this._byId.get(id);
       const color = n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type];
-      return `<button class="chip" ${attr}="${esc(id)}" title="${esc(title)}">${svgIcon(nodeIcon(n), color, 16)}${esc(
+      return `<button class="chip" ${attr}="${esc(id)}" title="${esc(title)}">${nodeSvg(n, color, 16)}${esc(
         n.name,
       )}<ha-icon icon="mdi:close"></ha-icon></button>`;
     };
@@ -565,7 +609,7 @@ class ClanPanel extends HTMLElement {
   _link(id) {
     const n = this._byId.get(id);
     if (!n) return esc(id);
-    const icon = svgIcon(nodeIcon(n), n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type], 16);
+    const icon = nodeSvg(n, n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type], 16);
     return `${icon}<a class="node" data-node="${esc(id)}">${esc(n.name)}</a>`;
   }
 
@@ -910,7 +954,7 @@ class ClanPanel extends HTMLElement {
     const kind =
       n.type === "routine" || n.type === "access" ? T[`kind_${n.kind}`] || T[`one_${n.type}`] : T[`one_${n.type}`];
     drawer.innerHTML = `
-      <header>${svgIcon(nodeIcon(n), color, 36)}
+      <header>${nodeSvg(n, color, 36)}
         <div class="name"><b>${esc(n.name)}</b><small>${esc(kind)}</small></div>
         <button class="ic" data-close title="${esc(T.close)}" aria-label="${esc(T.close)}"><ha-icon icon="mdi:close"></ha-icon></button>
       </header>
@@ -959,7 +1003,7 @@ class ClanPanel extends HTMLElement {
     const picture = person?.info?.picture;
     if (picture) return `<img src="${esc(picture)}" alt="">`;
     const color = n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type];
-    return svgIcon(nodeIcon(n), color, 44).replace('class="ni"', 'class="avatar"');
+    return nodeSvg(n, color, 44).replace('class="ni"', 'class="avatar"');
   }
 
   _userCard(u) {
@@ -1040,7 +1084,7 @@ class ClanPanel extends HTMLElement {
     const T = this.T;
     const { rows } = this._details(n);
     const color = n.type === "user" && n.flags.includes("admin") ? "#f9a825" : COLORS[n.type];
-    return `<div class="card ${this._cardClass(n)}"><header>${svgIcon(nodeIcon(n), color, 36)}<div class="name"><b><a class="node" data-node="${esc(n.id)}">${esc(
+    return `<div class="card ${this._cardClass(n)}"><header>${nodeSvg(n, color, 36)}<div class="name"><b><a class="node" data-node="${esc(n.id)}">${esc(
       n.name,
     )}</a></b><span class="sub">${esc(T[`one_${n.type}`])}</span></div>${this._cardTools(n)}</header>${this._flags(n)}<dl>${rows}</dl></div>`;
   }

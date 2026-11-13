@@ -733,7 +733,13 @@ class Builder:
                     out.append((self.anchor(entity_id), "notifies", action, not exists))
             if not out:
                 node_id = f"notify:{action}"
-                self.add(node_id, "notify", action, kind="service" if exists else "missing", info={"service": action})
+                self.add(
+                    node_id,
+                    "notify",
+                    action,
+                    kind="service" if exists else "missing",
+                    info={"service": action, "platform": domain},
+                )
                 if not exists and "missing" not in self.nodes[node_id]["flags"]:
                     self.nodes[node_id]["flags"].append("missing")
                 out.append((node_id, "notifies", action, not exists))
@@ -755,7 +761,7 @@ class Builder:
         """One node per messaging integration, missing until one of its actions exists."""
         node_id = f"notify:{domain}"
         fresh = node_id not in self.nodes
-        node = self.add(node_id, "notify", domain, info={"service": domain})
+        node = self.add(node_id, "notify", domain, info={"service": domain, "platform": domain})
         flags = node["flags"]
         if exists:
             node["kind"] = "service"
