@@ -143,9 +143,16 @@ function userWeight(n) {
   return (flags.includes("owner") ? 0 : flags.includes("admin") ? 1 : 2) + (flags.includes("system") ? 3 : 0);
 }
 
+// on the map a notification service drops the "notify." they all share, except notify.notify
+function mapName(n) {
+  const name = String(n.name || "");
+  const bare = n.type === "notify" && n.kind !== "computed" && name !== "notify.notify";
+  return bare && name.startsWith("notify.") ? name.slice("notify.".length) : name;
+}
+
 // full name in the last column, where there is room on the right
 function labelText(n) {
-  return n.rank >= 4 ? n.name : short(n.name);
+  return n.rank >= 4 ? mapName(n) : short(mapName(n));
 }
 
 function labelWidth(n) {
@@ -487,15 +494,28 @@ export class ClanGraph extends HTMLElement {
       (this._adjacent.get(n.id) || [])
         .map((e) => (e.source === n ? e.target : e.source))
         .filter((m) => (lower ? m.rank < n.rank : m.rank > n.rank));
+    // notification services placed from the right, one after another in the same integration
+    const loose = (n) => n.rank === RANK.notify && !near(n, true).length;
     const settle = (col, gap, wish) => {
       const wanted = col.map((n) => wish.get(n.id)).filter(Number.isFinite);
       let last = (wanted.length ? Math.min(...wanted) : -((col.length - 1) / 2) * gap) - gap;
-      const ys = col.map((n, i) => {
-        const want = wish.get(n.id);
+      const ys = [];
+      for (let i = 0; i < col.length; ) {
+        const n = col[i];
+        // such a run moves as one tight block, centred on what its members want: each member left to
+        // its own wish opened a hole in the middle of an integration whose automations are far apart
+        let end = i + 1;
+        if (loose(n)) while (end < col.length && loose(col[end]) && family(col[end]) === family(n)) end++;
+        const want = col
+          .slice(i, end)
+          .map((m, k) => wish.get(m.id) - k * gap)
+          .filter(Number.isFinite);
         const step = gap + (i > 0 && n.rank === RANK.notify && family(n) !== family(col[i - 1]) ? FAMILY_GAP : 0);
-        last = Math.max(Number.isFinite(want) ? want : last + step, last + step);
-        return last;
-      });
+        last = Math.max(want.length ? want.reduce((s, y) => s + y, 0) / want.length : last + step, last + step);
+        for (let k = i; k < end; k++) ys.push(last + (k - i) * gap);
+        last = ys[end - 1];
+        i = end;
+      }
       const offsets = col.map((n, i) => ys[i] - wish.get(n.id)).filter(Number.isFinite);
       const drift = offsets.length ? offsets.reduce((s, d) => s + d, 0) / offsets.length : 0;
       col.forEach((n, i) => {
@@ -521,6 +541,8 @@ export class ClanGraph extends HTMLElement {
       if (r === RANK.notify) together(col);
       settle(col, gaps[r], wish);
     }
+    // then the automations and the access column follow the nodes that pass has moved
+    for (const r of [4, 5]) settle(cols[r], gaps[r], new Map(cols[r].map((n) => [n.id, mean(near(n, true))])));
     const top = Math.min(...this._nodes.map((n) => n.y));
     this._colTops = cols.map((col) => (col.length ? top - 56 : null));
   }
