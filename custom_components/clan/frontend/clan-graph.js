@@ -496,6 +496,35 @@ export class ClanGraph extends HTMLElement {
         .filter((m) => (lower ? m.rank < n.rank : m.rank > n.rank));
     // notification services placed from the right, one after another in the same integration
     const loose = (n) => n.rank === RANK.notify && !near(n, true).length;
+    // room above the node at i: wider between two integrations of the notification column
+    const spacing = (col, i, gap) =>
+      gap + (i > 0 && col[i].rank === RANK.notify && family(col[i]) !== family(col[i - 1]) ? FAMILY_GAP : 0);
+    // places a column, in its order, as close as it can to what each node wants: only nodes that would
+    // overlap share a shift, the others stay where they want (a shift of the whole column sent the
+    // automations at the top far away from their services). A node that wants nothing stays against the
+    // node above it, or below it at the top of the column.
+    const pack = (col, gap, wish) => {
+      const at = [];
+      col.forEach((_n, i) => at.push(i ? at[i - 1] + spacing(col, i, gap) : 0));
+      const blocks = [];
+      col.forEach((n, i) => {
+        const w = wish.get(n.id);
+        blocks.push(Number.isFinite(w) ? { end: i, sum: w - at[i], count: 1 } : { end: i, sum: 0, count: 0 });
+        while (blocks.length > 1) {
+          const [a, b] = blocks.slice(-2);
+          if (a.count && b.count && a.sum / a.count <= b.sum / b.count) break;
+          blocks.pop();
+          a.end = b.end;
+          a.sum += b.sum;
+          a.count += b.count;
+        }
+      });
+      let i = 0;
+      for (const b of blocks) {
+        const z = b.count ? b.sum / b.count : -at[col.length - 1] / 2;
+        for (; i <= b.end; i++) col[i].y = z + at[i];
+      }
+    };
     const settle = (col, gap, wish) => {
       const wanted = col.map((n) => wish.get(n.id)).filter(Number.isFinite);
       let last = (wanted.length ? Math.min(...wanted) : -((col.length - 1) / 2) * gap) - gap;
@@ -510,7 +539,7 @@ export class ClanGraph extends HTMLElement {
           .slice(i, end)
           .map((m, k) => wish.get(m.id) - k * gap)
           .filter(Number.isFinite);
-        const step = gap + (i > 0 && n.rank === RANK.notify && family(n) !== family(col[i - 1]) ? FAMILY_GAP : 0);
+        const step = spacing(col, i, gap);
         last = Math.max(want.length ? want.reduce((s, y) => s + y, 0) / want.length : last + step, last + step);
         for (let k = i; k < end; k++) ys.push(last + (k - i) * gap);
         last = ys[end - 1];
@@ -532,17 +561,50 @@ export class ClanGraph extends HTMLElement {
       if (r === 0) col.forEach((n, i) => (n.y = (i - (col.length - 1) / 2) * gaps[0]));
       else settle(col, gaps[r], new Map(col.map((n) => [n.id, mean(near(n, true))])));
     });
+    // sorts a column on what its nodes want, those that want nothing keeping their height
+    const arrange = (col, wish) => {
+      const key = (n) => (Number.isFinite(wish.get(n.id)) ? wish.get(n.id) : n.y);
+      col.sort((a, b) => key(a) - key(b));
+    };
     // nodes without links to the left are placed from their links to the right
+    let moved = false;
     for (const r of [3, 2, 1]) {
       const col = cols[r];
       if (!col.some((n) => !near(n, true).length)) continue;
       const wish = new Map(col.map((n) => [n.id, near(n, true).length ? n.y : mean(near(n, false))]));
-      col.sort((a, b) => (wish.get(a.id) ?? 0) - (wish.get(b.id) ?? 0));
-      if (r === RANK.notify) together(col);
-      settle(col, gaps[r], wish);
+      arrange(col, wish);
+      moved = true;
+      if (r !== RANK.notify) {
+        settle(col, gaps[r], wish);
+        continue;
+      }
+      together(col);
+      // services held by a device stay in front of it and the others close up around them: placed on
+      // their own automations, they left a gap between two integrations, far wider than the others
+      if (col.some((n) => !loose(n))) pack(col, gaps[r], new Map(col.map((n) => [n.id, loose(n) ? NaN : n.y])));
+      else settle(col, gaps[r], wish);
     }
-    // then the automations and the access column follow the nodes that pass has moved
-    for (const r of [4, 5]) settle(cols[r], gaps[r], new Map(cols[r].map((n) => [n.id, mean(near(n, true))])));
+    // then the automations and the access column follow the nodes that pass has moved; a script
+    // linked only to others in its column goes with them
+    if (moved) {
+      for (const r of [4, 5]) {
+        const col = cols[r];
+        const left = new Map(col.map((n) => [n.id, mean(near(n, true))]));
+        const wish = new Map();
+        for (const n of col) {
+          let y = left.get(n.id);
+          if (!Number.isFinite(y)) {
+            const ys = (this._adjacent.get(n.id) || [])
+              .map((e) => left.get((e.source === n ? e.target : e.source).id))
+              .filter(Number.isFinite);
+            y = ys.length ? ys.reduce((s, v) => s + v, 0) / ys.length : NaN;
+          }
+          wish.set(n.id, y);
+        }
+        arrange(col, wish);
+        pack(col, gaps[r], wish);
+      }
+    }
     const top = Math.min(...this._nodes.map((n) => n.y));
     this._colTops = cols.map((col) => (col.length ? top - 56 : null));
   }
